@@ -117,6 +117,37 @@
 5. **历史数据是如何存储的？**
    - 系统采用智能优化存储，相同人数只更新时间戳，详情请参考"在线人数记录机制"部分
 
+6. **数据库中没有记录在线人数是为什么？**
+   - 网站程序无法主动调用API去记录人数，只有有人访问网站时才会被动地获取数据并记录
+   - 可以使用Python程序每隔5分钟访问一次网站来解决这个问题，对应的程序已上传到仓储中 `main.py`
+   ```python
+   import requests
+   import time
+   from datetime import datetime
+   
+   def check_server_status(url):
+       try:
+           response = requests.get(url)
+           # 获取当前时间
+           current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+           # 打印访问时间和状态码
+           print(f"{current_time} - 访问 {url} - 状态码: {response.status_code}")
+       except requests.exceptions.RequestException as e:
+           # 如果请求失败，打印错误信息
+           current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+           print(f"{current_time} - 请求失败 - 错误: {e}")
+   
+   def main():
+       url = "http://9gn5if.mcfuns.cn/"  # 替换为你的网站URL
+       interval = 300  # 5分钟的秒数
+       while True:
+           check_server_status(url)
+           time.sleep(interval)
+   
+   if __name__ == "__main__":
+       main()
+   ```
+
 ## 更新日志
 
 ### 最近更新
