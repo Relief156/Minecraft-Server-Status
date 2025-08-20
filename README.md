@@ -159,7 +159,8 @@
 - 优化了数据库查询性能
 ## 鸣谢
 
-- **糖糕云**：提供服务器支持，<mcurl name="糖糕云官网" url="https://www.tanggaoyun.com/aff/BKKCXILW"></mcurl>
-- **北立交MC股东管理组**：感谢与我半夜吹水，<mcurl name="北立交桥官网" url="https://www.5840.live/"></mcurl>
-- **Minecraft Server Status API**：提供API支持，<mcurl name="Minecraft Server Status API" url="https://api.mcsrvstat.us/"></mcurl>
+- **糖糕云**：提供服务器支持，[糖糕云官网](https://www.tanggaoyun.com/aff/BKKCXILW)
+- **北立交MC股东管理组**：感谢与我半夜吹水，[北立交桥官网](https://www.5840.live/)
+- **Minecraft Server Status API**：提供API支持，[Minecraft Server Status API](https://api.mcsrvstat.us/)
+
 如有任何问题或建议，请联系开发者。
