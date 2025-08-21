@@ -502,27 +502,81 @@ $minecraft_api = new MinecraftAPI();
                 return;
             }
             
-            // 设置模态框标题
-            modalTitle.textContent = serverName + ' - 在线人数历史数据';
-            
-            // 获取服务器状态
+            // 获取服务器卡片
             const serverCard = document.querySelector(`.server-card[data-server-id="${serverId}"]`);
             const isOnline = serverCard ? serverCard.querySelector('.server-header').classList.contains('online') : false;
+            
+            // 清空并设置模态框标题，添加服务器图标
+            modalTitle.textContent = '';
+            
+            // 创建标题图标元素
+            const titleIcon = document.createElement('div');
+            titleIcon.className = 'modal-title-icon';
+            
+            // 获取服务器图标并添加到标题中
+            if (serverCard) {
+                const serverIcon = serverCard.querySelector('.server-icon');
+                if (serverIcon && serverIcon.tagName === 'IMG') {
+                    const iconImg = document.createElement('img');
+                    iconImg.src = serverIcon.src;
+                    iconImg.alt = 'Server Icon';
+                    iconImg.style.width = '100%';
+                    iconImg.style.height = '100%';
+                    iconImg.style.objectFit = 'cover';
+                    titleIcon.appendChild(iconImg);
+                }
+            }
+            
+            // 创建标题文本节点
+            const titleText = document.createTextNode(serverName + ' - 在线人数历史数据');
+            
+            // 添加图标和文本到标题
+            modalTitle.appendChild(titleIcon);
+            modalTitle.appendChild(titleText);
             
             console.log('服务器在线状态:', isOnline);
             
             // 清空模态框内容
             modalBody.innerHTML = '';
-            
-            // 无论服务器是否在线，都显示图表（使用所有记录数据）
+
+            // 无论服务器是否在线，都显示图表和日期选择器
             modalBody.innerHTML = `
+                <div class="chart-controls">
+                    <div class="date-selector">
+                        <label for="selectedDate">选择日期：</label>
+                        <input type="date" id="selectedDate" class="date-input">
+                    </div>
+                </div>
                 <div class="chart-wrapper">
                     <canvas id="modalPlayerChart" width="400" height="300"></canvas>
                 </div>
             `;
-            
-            // 初始化图表，使用所有记录数据（days=0）
+
+            // 设置日期输入框的最大日期为今天，并默认选择今天
+            const today = new Date().toISOString().split('T')[0];
+            const dateInput = document.getElementById('selectedDate');
+            dateInput.max = today;
+            dateInput.value = today;
+
+            // 定义日期选择处理函数
+            function handleDateSelection() {
+                const selectedDate = document.getElementById('selectedDate').value;
+                if (selectedDate) {
+                    console.log('应用日期筛选:', selectedDate, '服务器ID:', serverId);
+                    loadModalChartDataForDate(serverId, selectedDate);
+                }
+            }
+
+            // 添加日期输入框变化事件，实现自动查询
+            if (dateInput) {
+                dateInput.addEventListener('change', handleDateSelection);
+            }
+
+            // 初始化图表
             initModalChart(serverId, 0);
+
+            // 自动加载今天的数据
+            handleDateSelection();
             
             // 显示模态框 - 使用强制显示的方式
             chartModal.style.display = 'flex';
@@ -695,9 +749,108 @@ $minecraft_api = new MinecraftAPI();
             loadModalChartData(serverId, days);
         }
         
-        // 加载模态框图表数据函数
+        // 加载模态框图表数据函数 - 按天数
         function loadModalChartData(serverId, days) {
             console.log('加载图表数据，服务器ID:', serverId, '天数:', days);
+        }
+        
+        // 加载模态框图表数据函数 - 按日期
+        function loadModalChartDataForDate(serverId, selectedDate) {
+            console.log('加载日期图表数据，服务器ID:', serverId, '日期:', selectedDate);
+            
+            try {
+                // 通过API获取指定日期的数据
+                const data = getHistoricalDataForDate(serverId, selectedDate);
+                
+                // 更新图表数据
+                if (currentModalChart && data) {
+                    currentModalChart.data.labels = data.labels;
+                    currentModalChart.data.datasets[0].data = data.values;
+                    currentModalChart.update();
+                    console.log('图表数据按日期更新成功，数据点数量:', data.values.length);
+                }
+            } catch (e) {
+                console.error('加载按日期图表数据失败:', e);
+            }
+        }
+        
+        // 获取指定日期的历史数据函数
+        function getHistoricalDataForDate(serverId, selectedDate) {
+            console.log('获取指定日期的历史数据，服务器ID:', serverId, '日期:', selectedDate);
+            
+            try {
+                // 使用同步XMLHttpRequest
+                const xhr = new XMLHttpRequest();
+                
+                // 构建请求URL，调用get_player_data.php脚本，并添加日期参数
+                const view_mode = 'date';
+                const url = `get_player_data.php?server_id=${serverId}&view_mode=${view_mode}&date=${selectedDate}`;
+                
+                // 添加缓存控制参数
+                const timestamp = new Date().getTime();
+                const fullUrl = url + '&_=' + timestamp;
+                
+                console.log('请求URL:', fullUrl);
+                
+                xhr.open('GET', fullUrl, false);
+                xhr.send();
+                
+                console.log('数据请求响应状态码:', xhr.status);
+                
+                if (xhr.status === 200) {
+                    console.log('数据请求响应内容:', xhr.responseText);
+                    
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        
+                        if (response.success && response.data && response.data.labels && response.data.values) {
+                            console.log('历史数据格式正确，返回数据');
+                            // 检查数据是否为空
+                            if (response.data.labels.length > 0) {
+                                return {
+                                    labels: response.data.labels,
+                                    values: response.data.values
+                                };
+                            } else {
+                                console.log('返回了空数据，使用0值数据');
+                                return generateEmptyData(); // 返回近两小时的0值数据
+                            }
+                        } else {
+                            console.error('获取历史数据失败:', response.error || '未知错误');
+                            // 显示错误提示给用户
+                            const modalBody = document.getElementById('modalBody');
+                            if (modalBody) {
+                                modalBody.innerHTML = '<p class="status-error">获取数据失败：' + (response.error || '未知错误') + '</p>';
+                            }
+                            return generateEmptyData(); // 返回近两小时的0值数据
+                        }
+                    } catch (e) {
+                        console.error('解析历史数据失败:', e);
+                        // 显示解析错误提示给用户
+                        const modalBody = document.getElementById('modalBody');
+                        if (modalBody) {
+                            modalBody.innerHTML = '<p class="status-error">数据解析失败：' + e.message + '</p>';
+                        }
+                        return generateEmptyData(); // 返回近两小时的0值数据
+                    }
+                } else {
+                    console.error('数据请求失败，状态码:', xhr.status);
+                    // 显示请求错误提示给用户
+                    const modalBody = document.getElementById('modalBody');
+                    if (modalBody) {
+                        modalBody.innerHTML = '<p class="status-error">数据请求失败，状态码：' + xhr.status + '</p>';
+                    }
+                    return generateEmptyData(); // 返回近两小时的0值数据
+                }
+            } catch (e) {
+                console.error('获取历史数据时发生异常:', e);
+                // 显示异常提示给用户
+                const modalBody = document.getElementById('modalBody');
+                if (modalBody) {
+                    modalBody.innerHTML = '<p class="status-error">获取数据时发生异常：' + e.message + '</p>';
+                }
+                return generateEmptyData(); // 返回近两小时的0值数据
+            }
             
             try {
                 // 通过API获取历史数据
@@ -1035,6 +1188,20 @@ $minecraft_api = new MinecraftAPI();
         .modal-header h3 {
             margin: 0;
             color: #333;
+            display: flex;
+            align-items: center;
+        }
+        
+        .modal-title-icon {
+            display: inline-flex;
+            align-items: center;
+            margin-right: 8px;
+            width: 64px;
+            height: 64px;
+            border-radius: 10px;
+            background-color: #fff;
+            padding: 3px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
         }
         
         .close-btn {
@@ -1129,6 +1296,62 @@ $minecraft_api = new MinecraftAPI();
             background-color: #4CAF50;
             color: white;
             border-color: #4CAF50;
+        }
+        
+        /* 日期选择器样式 */
+        .date-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .date-selector label {
+            font-weight: bold;
+            color: #333;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        
+        .date-input {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            background-color: white;
+            transition: border-color 0.2s ease;
+            min-width: 150px;
+        }
+        
+        .date-input:focus {
+            outline: none;
+            border-color: #4CAF50;
+            box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.1);
+        }
+        
+        .date-btn {
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background-color 0.2s ease, transform 0.2s ease;
+        }
+        
+        .date-btn:hover {
+            background-color: #45a049;
+            transform: translateY(-1px);
+        }
+        
+        .date-btn:active {
+            transform: translateY(0);
         }
         
         /* 服务器卡片悬停效果 */

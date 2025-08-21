@@ -139,22 +139,106 @@ class Database {
         
         return array('success' => true, 'data' => $data);
     }
+    
+    // 获取服务器指定日期的历史数据
+    public function getPlayerHistoryByDate($server_id, $date) {
+        // 确保日期格式正确（YYYY-MM-DD）
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
+            return array('success' => false, 'error' => '无效的日期格式，请使用YYYY-MM-DD格式');
+        }
+        
+        // 构建SQL查询，筛选指定日期的数据
+        $sql = "SELECT DATE_FORMAT(record_time, '%H:%i:%s') as time_label, 
+               players_online 
+               FROM player_history 
+               WHERE server_id = ? 
+               AND DATE(record_time) = ? 
+               ORDER BY record_time ASC";
+        
+        $stmt = $this->conn->prepare($sql);
+        
+        if ($stmt === false) {
+            return array('success' => false, 'error' => '准备SQL语句失败: ' . $this->conn->error);
+        }
+        
+        $stmt->bind_param("is", $server_id, $date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $stmt->close();
+        
+        $data = array();
+        $labels = array();
+        $values = array();
+        
+        if ($result && $result->num_rows > 0) {
+            $prev_players = null; // 上一条记录的在线人数
+            $first_record = true; // 是否是第一条记录
+            $last_time_label = ''; // 最后一条记录的时间标签
+            $last_players = ''; // 最后一条记录的在线人数
+            $temp_rows = array(); // 临时存储所有记录
+            
+            // 先将所有记录存储到临时数组
+            while ($row = $result->fetch_assoc()) {
+                $temp_rows[] = $row;
+                $last_time_label = $row['time_label'];
+                $last_players = $row['players_online'];
+            }
+            
+            // 遍历临时数组，只保留在线人数变化的记录
+            foreach ($temp_rows as $index => $row) {
+                $current_players = $row['players_online'];
+                
+                // 保留第一条记录
+                if ($first_record) {
+                    $labels[] = $row['time_label'];
+                    $values[] = $current_players;
+                    $prev_players = $current_players;
+                    $first_record = false;
+                    continue;
+                }
+                
+                // 如果在线人数发生变化，保留当前记录
+                if ($current_players != $prev_players) {
+                    $labels[] = $row['time_label'];
+                    $values[] = $current_players;
+                    $prev_players = $current_players;
+                }
+                // 确保保留最后一条记录（即使和前一条相同）
+                else if ($index == count($temp_rows) - 1) {
+                    $labels[] = $row['time_label'];
+                    $values[] = $current_players;
+                }
+            }
+        }
+        
+        $data['labels'] = $labels;
+        $data['values'] = $values;
+        
+        return array('success' => true, 'data' => $data);
+    }
 }
 
 // 获取请求参数
 $server_id = isset($_GET['server_id']) ? intval($_GET['server_id']) : 0;
 $view_mode = isset($_GET['view_mode']) ? $_GET['view_mode'] : 'raw'; // 默认为raw
+$date = isset($_GET['date']) ? $_GET['date'] : ''; // 日期参数
 
 // 验证参数
 if ($server_id <= 0) {
     die(json_encode(array('success' => false, 'error' => '无效的服务器ID')));
 }
 
-// 创建数据库连接并获取数据
+// 创建数据库连接
 $db = new Database();
 
-// 只使用原始数据，不进行聚合
-$result = $db->getPlayerHistory($server_id);
+// 根据视图模式获取数据
+if ($view_mode === 'date' && !empty($date)) {
+    // 获取指定日期的数据
+    $result = $db->getPlayerHistoryByDate($server_id, $date);
+} else {
+    // 默认获取所有原始数据
+    $result = $db->getPlayerHistory($server_id);
+}
 
 // 输出JSON响应
 die(json_encode($result));
