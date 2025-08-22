@@ -42,10 +42,11 @@ class Database {
         return $servers;
     }
     
-    // 获取服务器的所有历史数据
+    // 获取服务器的所有历史数据，包含玩家列表
     public function getPlayerHistory($server_id) {
         $sql = "SELECT DATE_FORMAT(record_time, '%Y-%m-%d %H:%i:%s') as time_label, 
-               players_online 
+               players_online, 
+               player_list_json
                FROM player_history 
                WHERE server_id = ? 
                ORDER BY record_time ASC";
@@ -65,7 +66,7 @@ class Database {
         return $result;
     }
     
-    // 获取服务器的聚合历史数据（按指定时间间隔分组）
+    // 获取服务器的聚合历史数据（按指定时间间隔分组），包含玩家列表
     public function getAggregatedPlayerHistory($server_id, $interval = 'hour') {
         // 根据间隔选择分组格式
         switch($interval) {
@@ -78,12 +79,24 @@ class Database {
                 break;
         }
         
-        $sql = "SELECT DATE_FORMAT(record_time, '$time_format') as time_label, 
-               AVG(players_online) as avg_players 
-               FROM player_history 
-               WHERE server_id = ? 
-               GROUP BY time_label 
-               ORDER BY time_label ASC";
+        // 对于聚合数据，我们需要选择每个时间段的最新记录来获取玩家列表
+        // 先获取时间段和对应的平均人数
+        $sql = "SELECT 
+                   time_label, 
+                   avg_players, 
+                   (SELECT player_list_json FROM player_history 
+                    WHERE server_id = ? 
+                    AND DATE_FORMAT(record_time, '$time_format') = time_label 
+                    ORDER BY record_time DESC LIMIT 1) as player_list_json
+                FROM (
+                    SELECT 
+                        DATE_FORMAT(record_time, '$time_format') as time_label, 
+                        AVG(players_online) as avg_players 
+                    FROM player_history 
+                    WHERE server_id = ? 
+                    GROUP BY time_label 
+                ) AS aggregated
+                ORDER BY time_label ASC";
         
         $stmt = $this->conn->prepare($sql);
         
@@ -92,7 +105,7 @@ class Database {
             return false;
         }
         
-        $stmt->bind_param("i", $server_id);
+        $stmt->bind_param("ii", $server_id, $server_id);
         $stmt->execute();
         $result = $stmt->get_result();
         $stmt->close();
@@ -126,6 +139,7 @@ if ($view_mode === 'raw') {
 // 处理数据
 $labels = array();
 $values = array();
+$playerLists = array();
 
 if ($result && $result->num_rows > 0) {
     while ($row = $result->fetch_assoc()) {
@@ -135,16 +149,28 @@ if ($result && $result->num_rows > 0) {
         } else {
             $values[] = round($row['avg_players']);
         }
+        
+        // 处理玩家列表数据
+        $playerList = array();
+        if (isset($row['player_list_json']) && !empty($row['player_list_json'])) {
+            $playerListData = json_decode($row['player_list_json'], true);
+            if (is_array($playerListData)) {
+                $playerList = $playerListData;
+            }
+        }
+        $playerLists[] = $playerList;
     }
 } else {
     // 如果没有数据，显示友好提示
     $labels = array('暂无数据');
     $values = array(0);
+    $playerLists = array(array());
 }
 
 // 转换数据为JSON格式
 $chart_labels = json_encode($labels);
 $chart_values = json_encode($values);
+$chart_player_lists = json_encode($playerLists);
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -284,6 +310,9 @@ $chart_values = json_encode($values);
             }]
         };
         
+        // 玩家列表数据
+        const playerLists = <?php echo $chart_player_lists; ?>;
+        
         const chartConfig = {
             type: 'line',
             data: chartData,
@@ -299,13 +328,30 @@ $chart_values = json_encode($values);
                         mode: 'index',
                         intersect: false,
                         callbacks: {
+                            title: function(context) {
+                                const index = context[0].dataIndex;
+                                const timeLabel = context[0].chart.data.labels[index];
+                                const playersOnline = context[0].parsed.y;
+                                
+                                // 基本标题显示时间和在线人数
+                                return timeLabel + ', 在线人数：' + playersOnline;
+                            },
                             label: function(context) {
-                                let label = context.dataset.label || '';
-                                if (label) {
-                                    label += ': ';
+                                const index = context.dataIndex;
+                                const playerList = playerLists[index];
+                                
+                                if (playerList && playerList.length > 0) {
+                                    // 有玩家列表数据
+                                    const playersText = playerList.join(', ');
+                                    // 限制显示长度，防止tooltip过长
+                                    if (playersText.length > 100) {
+                                        return '在线玩家：' + playersText.substring(0, 100) + '...';
+                                    }
+                                    return '在线玩家：' + playersText;
+                                } else {
+                                    // 没有玩家列表数据
+                                    return '无法获取在线玩家列表';
                                 }
-                                label += context.parsed.y + ' 人';
-                                return label;
                             }
                         }
                     },

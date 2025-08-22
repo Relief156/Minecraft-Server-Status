@@ -235,9 +235,16 @@ class Database {
     
     // 保存服务器在线人数历史数据
     // 优化逻辑：如果当前人数与上一条记录相同，则更新记录时间；否则插入新记录
-    public function savePlayerHistory($server_id, $players_online) {
+    // 如果提供了玩家列表，当人数相同时还会比较玩家列表，如果列表不同也会插入新记录
+    public function savePlayerHistory($server_id, $players_online, $player_list = null) {
+        // 准备玩家列表JSON
+        $player_list_json = null;
+        if ($players_online > 0 && is_array($player_list) && count($player_list) > 0) {
+            $player_list_json = json_encode($player_list);
+        }
+        
         // 首先检查上一条记录
-        $sql_last = "SELECT id, players_online FROM player_history WHERE server_id = ? ORDER BY record_time DESC LIMIT 1";
+        $sql_last = "SELECT id, players_online, player_list_json FROM player_history WHERE server_id = ? ORDER BY record_time DESC LIMIT 1";
         $stmt_last = $this->conn->prepare($sql_last);
         
         if ($stmt_last === false) {
@@ -248,30 +255,81 @@ class Database {
         $stmt_last->bind_param("i", $server_id);
         $stmt_last->execute();
         $result_last = $stmt_last->get_result();
+        $stmt_last->close();
         
         if ($result_last && $result_last->num_rows > 0) {
             // 有上一条记录，检查人数是否相同
             $row_last = $result_last->fetch_assoc();
             $last_id = $row_last['id'];
             $last_players_online = $row_last['players_online'];
+            $last_player_list_json = $row_last['player_list_json'];
             
             if ($last_players_online == $players_online) {
-                // 人数相同，更新记录时间
-                $sql_update = "UPDATE player_history SET record_time = NOW() WHERE id = ?";
-                $stmt_update = $this->conn->prepare($sql_update);
-                
-                if ($stmt_update === false) {
-                    error_log("更新玩家历史数据时间prepare语句失败: " . $this->conn->error);
-                    return false;
+                // 人数相同，检查玩家列表是否相同
+                if ($players_online > 0 && $player_list !== null) {
+                    // 获取排序后的当前玩家列表
+                    sort($player_list);
+                    $current_player_list_sorted = $player_list;
+                    
+                    // 获取排序后的历史玩家列表
+                    $last_player_list_sorted = [];
+                    if (!empty($last_player_list_json)) {
+                        $last_player_list = json_decode($last_player_list_json, true);
+                        if (is_array($last_player_list)) {
+                            sort($last_player_list);
+                            $last_player_list_sorted = $last_player_list;
+                        }
+                    }
+                    
+                    // 比较玩家列表（确保顺序不影响比较结果）
+                    if (count($current_player_list_sorted) == count($last_player_list_sorted) && 
+                        $current_player_list_sorted === $last_player_list_sorted) {
+                        // 玩家列表相同，更新记录时间
+                        $sql_update = "UPDATE player_history SET record_time = NOW() WHERE id = ?";
+                        $stmt_update_players = $this->conn->prepare($sql_update);
+                        
+                        if ($stmt_update_players === false) {
+                            error_log("更新玩家历史数据时间prepare语句失败: " . $this->conn->error);
+                            return false;
+                        }
+                        
+                        $stmt_update_players->bind_param("i", $last_id);
+                        $result_update = $stmt_update_players->execute();
+                        $stmt_update_players->close();
+                        return $result_update;
+                    } else {
+                        // 玩家列表不同，插入新记录
+                        $sql_insert = "INSERT INTO player_history (server_id, players_online, player_list_json) VALUES (?, ?, ?)";
+                        $stmt_insert = $this->conn->prepare($sql_insert);
+                        
+                        if ($stmt_insert === false) {
+                            error_log("保存玩家历史数据prepare语句失败: " . $this->conn->error);
+                            return false;
+                        }
+                        
+                        $stmt_insert->bind_param("iis", $server_id, $players_online, $player_list_json);
+                        $result_insert = $stmt_insert->execute();
+                        $stmt_insert->close();
+                        return $result_insert;
+                    }
+                } else {
+                    // 没有玩家在线，或没有提供玩家列表，直接更新记录时间
+                    $sql_update = "UPDATE player_history SET record_time = NOW() WHERE id = ?";
+                    $stmt_update_inner = $this->conn->prepare($sql_update);
+                    
+                    if ($stmt_update_inner === false) {
+                        error_log("更新玩家历史数据时间prepare语句失败: " . $this->conn->error);
+                        return false;
+                    }
+                    
+                    $stmt_update_inner->bind_param("i", $last_id);
+                    $result_update = $stmt_update_inner->execute();
+                    $stmt_update_inner->close();
+                    return $result_update;
                 }
-                
-                $stmt_update->bind_param("i", $last_id);
-                $result_update = $stmt_update->execute();
-                $stmt_update->close();
-                return $result_update;
             } else {
                 // 人数不同，插入新记录
-                $sql_insert = "INSERT INTO player_history (server_id, players_online) VALUES (?, ?)";
+                $sql_insert = "INSERT INTO player_history (server_id, players_online, player_list_json) VALUES (?, ?, ?)";
                 $stmt_insert = $this->conn->prepare($sql_insert);
                 
                 if ($stmt_insert === false) {
@@ -279,14 +337,14 @@ class Database {
                     return false;
                 }
                 
-                $stmt_insert->bind_param("ii", $server_id, $players_online);
+                $stmt_insert->bind_param("iis", $server_id, $players_online, $player_list_json);
                 $result_insert = $stmt_insert->execute();
                 $stmt_insert->close();
                 return $result_insert;
             }
         } else {
             // 没有上一条记录，直接插入新记录
-            $sql_insert = "INSERT INTO player_history (server_id, players_online) VALUES (?, ?)";
+            $sql_insert = "INSERT INTO player_history (server_id, players_online, player_list_json) VALUES (?, ?, ?)";
             $stmt_insert = $this->conn->prepare($sql_insert);
             
             if ($stmt_insert === false) {
@@ -294,17 +352,16 @@ class Database {
                 return false;
             }
             
-            $stmt_insert->bind_param("ii", $server_id, $players_online);
+            $stmt_insert->bind_param("iis", $server_id, $players_online, $player_list_json);
             $result_insert = $stmt_insert->execute();
             $stmt_insert->close();
             return $result_insert;
         }
         
-        $stmt_last->close();
         return false;
     }
     
-    // 获取服务器的玩家历史数据
+    // 获取服务器的玩家历史数据（聚合数据）
     // $days: 要获取的天数范围，默认为1天，设置为0表示查询所有记录
     public function getPlayerHistory($server_id, $days = 1) {
         // 根据天数选择合适的时间间隔分组
@@ -348,6 +405,46 @@ class Database {
         
         // 绑定参数
         $stmt->bind_param("is", $server_id, $time_ago);
+        
+        // 执行查询
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $stmt->close();
+        
+        return $result;
+    }
+    
+    // 获取服务器的原始玩家历史数据（包含玩家列表）
+    // $days: 要获取的天数范围，默认为1天，设置为0表示查询所有记录
+    public function getRawPlayerHistory($server_id, $days = 1) {
+        // 设置SQL查询语句基础部分
+        $sql = "SELECT record_time, players_online, player_list_json 
+               FROM player_history 
+               WHERE server_id = ? ";
+                
+        // 计算时间范围（如果不是查询所有记录）
+        if ($days > 0) {
+            $time_ago = date('Y-m-d H:i:s', strtotime("-$days days"));
+            $sql .= "AND record_time >= ? ";
+        }
+        
+        // 完成SQL查询语句
+        $sql .= "ORDER BY record_time ASC";
+        
+        // 准备预处理语句
+        $stmt = $this->conn->prepare($sql);
+        
+        if ($stmt === false) {
+            error_log("获取原始玩家历史数据prepare语句失败: " . $this->conn->error);
+            return false;
+        }
+        
+        // 绑定参数
+        if ($days > 0) {
+            $stmt->bind_param("is", $server_id, $time_ago);
+        } else {
+            $stmt->bind_param("i", $server_id);
+        }
         
         // 执行查询
         $stmt->execute();

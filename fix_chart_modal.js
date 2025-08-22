@@ -143,6 +143,9 @@ function hideChartModal() {
 // 当前模态框中的图表实例
 let currentModalChart = null;
 
+// 全局存储玩家列表数据的变量
+let modalPlayerLists = [];
+
 // 初始化模态框中的图表函数
 function initModalChart(serverId, days) {
     console.log('初始化图表，服务器ID:', serverId, '天数:', days);
@@ -158,6 +161,9 @@ function initModalChart(serverId, days) {
         console.error('图表画布元素不存在！');
         return;
     }
+    
+    // 重新初始化玩家列表数据
+    modalPlayerLists = [];
     
     // 设置图表配置
     const config = {
@@ -182,7 +188,78 @@ function initModalChart(serverId, days) {
                 },
                 tooltip: {
                     mode: 'index',
-                    intersect: false
+                    intersect: false,
+                    callbacks: {
+                        // 自定义标题显示时间
+                        title: function(context) {
+                            const index = context[0].dataIndex;
+                            const label = context[0].label || '';
+                            return label;
+                        },
+                        // 自定义标签显示在线人数和玩家列表
+                        label: function(context) {
+                            let label = '在线人数：' + context.raw;
+                            const index = context.dataIndex;
+                            
+                            console.log('--- tooltip触发 ---');
+                            console.log('上下文数据:', { index, rawValue: context.raw, chartDataLength: currentModalChart?.data?.datasets?.[0]?.data?.length });
+                            console.log('全局modalPlayerLists引用类型:', typeof modalPlayerLists);
+                            console.log('全局modalPlayerLists是否为数组:', Array.isArray(modalPlayerLists));
+                            console.log('全局modalPlayerLists长度:', modalPlayerLists?.length || '未定义');
+                            
+                            // 检查modalPlayerLists是否已正确初始化
+                            if (!modalPlayerLists || !Array.isArray(modalPlayerLists)) {
+                                console.error('modalPlayerLists未正确初始化或不是数组');
+                                return label + '\n[调试] 玩家列表数据结构错误';
+                            }
+                            
+                            // 检查索引范围
+                            if (index < 0 || index >= modalPlayerLists.length) {
+                                console.error('索引越界:', index, '玩家列表长度:', modalPlayerLists.length);
+                                return label + `\n[调试] 索引(${index})超出范围(0-${modalPlayerLists.length-1})`;
+                            }
+                            
+                            // 尝试获取对应的玩家列表
+                            const playerList = modalPlayerLists[index];
+                            console.log('当前索引的玩家列表数据:', playerList, '类型:', typeof playerList);
+                            
+                            try {
+                                // 无论数据类型如何，都尝试获取玩家列表
+                                if (playerList) {
+                                    // 处理可能的JSON字符串
+                                    let parsedPlayers = playerList;
+                                    if (typeof parsedPlayers === 'string') {
+                                        console.log('尝试解析JSON字符串:', parsedPlayers);
+                                        parsedPlayers = JSON.parse(parsedPlayers);
+                                    }
+                                    
+                                    // 处理数组情况
+                                    if (Array.isArray(parsedPlayers)) {
+                                        if (parsedPlayers.length > 0) {
+                                            label += '\n在线玩家：' + parsedPlayers.join(', ');
+                                            console.log('成功显示玩家列表，共', parsedPlayers.length, '人');
+                                        } else {
+                                            label += '\n在线玩家：无';
+                                            console.log('玩家列表为空数组');
+                                        }
+                                    } else {
+                                        // 处理非数组但有值的情况
+                                        label += '\n[调试] 玩家列表格式异常: ' + JSON.stringify(parsedPlayers);
+                                        console.log('玩家列表不是数组，值为:', parsedPlayers);
+                                    }
+                                } else {
+                                    label += '\n在线玩家：无数据';
+                                    console.log('玩家列表为空值');
+                                }
+                            } catch (e) {
+                                console.error('处理玩家列表时发生异常:', e);
+                                label += '\n[调试] 处理玩家列表失败: ' + e.message;
+                            }
+                            
+                            console.log('--- tooltip处理完成 ---');
+                            return label;
+                        }
+                    }
                 },
                 title: {
                     display: false
@@ -223,6 +300,9 @@ function initModalChart(serverId, days) {
         return;
     }
     
+    // 初始化玩家列表数据
+    modalPlayerLists = [];
+    
     // 加载数据
     loadModalChartData(serverId, days);
 }
@@ -230,6 +310,8 @@ function initModalChart(serverId, days) {
 // 更新模态框中的图表函数
 function updateModalChart(serverId, days) {
     console.log('更新图表，服务器ID:', serverId, '天数:', days);
+    // 重新初始化玩家列表数据
+    modalPlayerLists = [];
     loadModalChartData(serverId, days);
 }
 
@@ -238,22 +320,111 @@ function loadModalChartData(serverId, days) {
     console.log('加载图表数据，服务器ID:', serverId, '天数:', days);
     
     try {
-        // 通过API获取历史数据
-        const data = getHistoricalData(serverId, days);
+        // 通过API获取包含玩家列表的原始历史数据
+        const data = getRawHistoricalData(serverId, days);
         
         // 更新图表数据
         if (currentModalChart && data) {
             currentModalChart.data.labels = data.labels;
             currentModalChart.data.datasets[0].data = data.values;
+            // 保存玩家列表数据
+            console.log('原始数据中的playerLists:', data.playerLists);
+            modalPlayerLists = Array.isArray(data.playerLists) ? data.playerLists : [];
+            console.log('保存的玩家列表数据(类型检查后):', modalPlayerLists);
+            console.log('玩家列表数据长度:', modalPlayerLists.length);
             currentModalChart.update();
             console.log('图表数据更新成功，数据点数量:', data.values.length);
         }
     } catch (e) {
         console.error('加载图表数据失败:', e);
+        // 尝试使用传统的聚合数据作为备选方案
+        try {
+            const data = getHistoricalData(serverId, days);
+            if (currentModalChart && data) {
+                currentModalChart.data.labels = data.labels;
+                currentModalChart.data.datasets[0].data = data.values;
+                // 清空玩家列表数据
+                modalPlayerLists = [];
+                currentModalChart.update();
+                console.log('使用备选数据更新图表成功，数据点数量:', data.values.length);
+            }
+        } catch (fallbackError) {
+            console.error('备选数据加载也失败:', fallbackError);
+        }
     }
 }
 
-// 获取历史数据函数
+// 获取包含玩家列表的原始历史数据函数
+function getRawHistoricalData(serverId, days) {
+    console.log('获取原始历史数据，服务器ID:', serverId, '天数:', days);
+    
+    try {
+        // 使用同步XMLHttpRequest
+        const xhr = new XMLHttpRequest();
+        const url = `api.php?action=get_raw_player_history&server_id=${serverId}&days=${days}`;
+        
+        // 添加缓存控制参数
+        const timestamp = new Date().getTime();
+        const fullUrl = url + '&_=' + timestamp;
+        
+        console.log('请求URL:', fullUrl);
+        
+        xhr.open('GET', fullUrl, false);
+        xhr.send();
+        
+        console.log('API响应状态码:', xhr.status);
+        
+        if (xhr.status === 200) {
+            console.log('API响应内容:', xhr.responseText);
+            
+            try {
+                const response = JSON.parse(xhr.responseText);
+                
+                if (response.success) {
+                    // 检查响应数据结构
+                    if (response.data && response.data.labels && response.data.values && response.data.playerLists) {
+                        console.log('原始历史数据格式正确，返回数据');
+                        return {
+                            labels: response.data.labels,
+                            values: response.data.values,
+                            playerLists: response.data.playerLists
+                        };
+                    } else if (response.labels && response.values && response.playerLists) {
+                        // 兼容旧的返回格式
+                        console.log('使用旧的数据格式');
+                        return {
+                            labels: response.labels,
+                            values: response.values,
+                            playerLists: response.playerLists
+                        };
+                    } else {
+                        console.error('原始历史数据格式不正确:', response);
+                        // 使用普通历史数据作为备选
+                        return getHistoricalData(serverId, days);
+                    }
+                } else {
+                    console.error('获取原始历史数据失败:', response.error);
+                    // 使用普通历史数据作为备选
+                    return getHistoricalData(serverId, days);
+                }
+            } catch (e) {
+                console.error('解析原始历史数据失败:', e);
+                // 使用普通历史数据作为备选
+                return getHistoricalData(serverId, days);
+            }
+        } else {
+            console.error('API请求失败，状态码:', xhr.status);
+            // 使用普通历史数据作为备选
+            return getHistoricalData(serverId, days);
+        }
+    } catch (e) {
+        console.error('获取原始历史数据时发生异常:', e);
+        // 使用普通历史数据作为备选
+        return getHistoricalData(serverId, days);
+    }
+}
+
+// 获取传统历史数据函数（聚合数据）
 function getHistoricalData(serverId, days) {
     console.log('获取历史数据，服务器ID:', serverId, '天数:', days);
     
@@ -285,14 +456,16 @@ function getHistoricalData(serverId, days) {
                         console.log('历史数据格式正确，返回数据');
                         return {
                             labels: response.data.labels,
-                            values: response.data.values
+                            values: response.data.values,
+                            playerLists: [] // 空的玩家列表数组
                         };
                     } else if (response.labels && response.values) {
                         // 兼容旧的返回格式
                         console.log('使用旧的数据格式');
                         return {
                             labels: response.labels,
-                            values: response.values
+                            values: response.values,
+                            playerLists: [] // 空的玩家列表数组
                         };
                     } else {
                         console.error('历史数据格式不正确:', response);

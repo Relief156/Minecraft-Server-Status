@@ -1,4 +1,9 @@
 <?php
+// 启用错误报告
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
 // 安装设置页面
 
 // 如果已经安装，则重定向到首页
@@ -73,13 +78,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $error = '创建管理员账户失败: ' . $conn->error;
                         } else {
                             // 创建玩家历史数据表
-                            $sql = "CREATE TABLE IF NOT EXISTS player_history (
-                                id INT(11) AUTO_INCREMENT PRIMARY KEY,
-                                server_id INT(11) NOT NULL,
-                                players_online INT NOT NULL,
-                                record_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
-                            )";
+                                $sql = "CREATE TABLE IF NOT EXISTS player_history (
+                                    id INT(11) AUTO_INCREMENT PRIMARY KEY,
+                                    server_id INT(11) NOT NULL,
+                                    players_online INT NOT NULL,
+                                    player_list_json TEXT DEFAULT NULL,
+                                    record_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                    FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+                                )";
                             
                             if (!$conn->query($sql)) {
                                 $error = '创建player_history表失败: ' . $conn->error;
@@ -107,6 +113,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 $config_content .= "define('DB_NAME', '$db_name');\n\n";
                                 $config_content .= "// API配置\n";
                                 $config_content .= "define('API_URL', 'https://api.mcsrvstat.us/3/');\n";
+                                $config_content .= "// Java版服务器API URL列表（按优先级顺序）\n";
+                                $config_content .= "define('JAVA_API_URLS', ['http://cow.mc6.cn:10709/raw/', 'http://110.42.50.70:30204/raw/']);\n";
+                                $config_content .= "// Bedrock版服务器API URL\n";
+                                $config_content .= "// 注意：Bedrock API目前只支持单个URL，如有需要可扩展为数组\n";
+                                $config_content .= "// 如需支持多个Bedrock API，可改为：define('BEDROCK_API_URLS', ['https://api.mcsrvstat.us/bedrock/3/']);\n";
+                                $config_content .= "define('BEDROCK_API_URL', 'https://api.mcsrvstat.us/bedrock/3/');\n";
                                 $config_content .= "// mcsrvstat.us API不需要API密钥\n";
                                 $config_content .= "// define('API_KEY', 'your_api_key_here');\n\n";
                                 $config_content .= "// 网站配置\n";
@@ -127,10 +139,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
-            
-            // 关闭连接
-            $conn->close();
         }
+        
+        // 关闭连接
+        $conn->close();
     }
 }
 ?>
@@ -364,4 +376,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
     </div>
 </body>
+
 </html>

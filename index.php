@@ -223,7 +223,8 @@ $minecraft_api = new MinecraftAPI();
             color: #ecf0f1;
             padding: 15px;
             border-radius: 8px;
-            margin-top: 15px;
+            margin-top: auto;
+            margin-bottom: 0;
             font-style: normal;
             line-height: 1.6;
             white-space: normal;
@@ -231,6 +232,72 @@ $minecraft_api = new MinecraftAPI();
             text-align: center;
             box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.3);
             border: 1px solid #1a252f;
+            height: 80px; /* 设置固定高度 */
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
+        
+        /* 服务器卡片样式优化 */
+        .server-card {
+            background-color: #fff;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            overflow: visible;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative;
+            border: 1px solid #e0e0e0;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 300px; /* 设置最小高度 */
+        }
+        
+        .server-body {
+            padding: 15px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        
+        .player-list {
+            display: none; /* 隐藏玩家列表区域 */
+        }
+        
+        .player-list h4 {
+            color: #fff;
+            font-size: 0.9em;
+            margin-bottom: 8px;
+            font-weight: normal;
+        }
+        
+        .player-names {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 5px;
+        }
+        
+        .player-tag {
+            background-color: rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            transition: background-color 0.3s ease;
+        }
+        
+        .player-tag:hover {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        
+        .no-players {
+            color: rgba(255, 255, 255, 0.7);
+            font-style: italic;
+            font-size: 0.9em;
         }
         
         /* 复制IP按钮 */
@@ -309,10 +376,7 @@ $minecraft_api = new MinecraftAPI();
 </head>
 <body>
     <div class="container">
-        <h1><?= SITE_TITLE ?></h1>
-        <div class="login-link">
-            <a href="login.php">管理员登录</a>
-        </div>
+        <h1 style="cursor: pointer;"><a href="login.php" style="color: inherit; text-decoration: none;"><?= SITE_TITLE ?></a></h1>
 
         <?php if ($servers->num_rows > 0): ?>
             
@@ -331,7 +395,9 @@ $minecraft_api = new MinecraftAPI();
                     // 保存在线人数历史数据
                     // 只在服务器在线时保存数据
                     if (isset($status['online']) && $status['online']) {
-                        $db->savePlayerHistory($server['id'], $status['players_online']);
+                        // 获取玩家列表（如果存在）
+                        $player_list = isset($status['player_list']) ? $status['player_list'] : null;
+                        $db->savePlayerHistory($server['id'], $status['players_online'], $player_list);
                     }
                     ?>
                     <div class="server-card" data-server-id="<?= $server['id'] ?>">
@@ -368,6 +434,20 @@ $minecraft_api = new MinecraftAPI();
                                 </div>
                                 <div class="server-motd">
                                     <?= isset($status['motd_html']) ? $status['motd_html'] : $status['motd'] ?>
+                                </div>
+                                
+                                <!-- 玩家列表 -->
+                                <div class="player-list">
+                                    <h4>在线玩家</h4>
+                                    <div class="player-names" id="players-<?= $server['id'] ?>">
+                                        <?php if (isset($status['player_list']) && !empty($status['player_list'])): ?>
+                                            <?php foreach ($status['player_list'] as $player): ?>
+                                                <span class="player-tag"><?= htmlspecialchars($player) ?></span>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
+                                            <div class="no-players">暂无在线玩家</div>
+                                        <?php endif; ?>
+                                    </div>
                                 </div>
                             <?php else: ?>
                                 <div class="server-info">
@@ -597,6 +677,9 @@ $minecraft_api = new MinecraftAPI();
         // 当前模态框中的图表实例
         let currentModalChart = null;
         
+        // 存储玩家列表数据的全局变量
+        let modalPlayerLists = [];
+        
         // 初始化模态框中的图表函数
         function initModalChart(serverId, days) {
             console.log('初始化图表，服务器ID:', serverId, '天数:', days);
@@ -660,6 +743,9 @@ $minecraft_api = new MinecraftAPI();
                 return;
             }
             
+            // 重置玩家列表数据
+            modalPlayerLists = [];
+            
             // 设置图表配置
             const config = {
                 type: 'line',
@@ -683,7 +769,81 @@ $minecraft_api = new MinecraftAPI();
                         },
                         tooltip: {
                             mode: 'index',
-                            intersect: false
+                            intersect: false,
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            titleColor: '#fff',
+                            bodyColor: '#fff',
+                            borderColor: 'rgba(255, 255, 255, 0.2)',
+                            borderWidth: 1,
+                            padding: 10,
+                            displayColors: false,
+                            callbacks: {
+                                title: function(context) {
+                                    return `时间: ${context[0].label}`;
+                                },
+                                label: function(context) {
+                                    // 详细调试信息
+                                    console.log('Tooltip上下文:', context);
+                                    console.log('modalPlayerLists类型:', typeof modalPlayerLists, '长度:', modalPlayerLists.length);
+                                    console.log('当前索引:', context.dataIndex);
+                                    
+                                    // 显示在线人数
+                                    const value = context.parsed.y || 0;
+                                    return `在线人数：${value}`;
+                                },
+                                // 使用afterLabel回调来显示在线玩家信息，确保它在新行显示
+                                afterLabel: function(context) {
+                                    try {
+                                        // 检查索引是否有效
+                                        if (context.dataIndex !== undefined && 
+                                            Array.isArray(modalPlayerLists) && 
+                                            context.dataIndex >= 0 && 
+                                            context.dataIndex < modalPlayerLists.length) {
+                                            
+                                            const playerList = modalPlayerLists[context.dataIndex];
+                                            console.log('当前玩家列表数据:', playerList);
+                                            
+                                            // 处理玩家列表数据
+                                            if (playerList) {
+                                                // 尝试解析JSON字符串
+                                                let parsedPlayers = playerList;
+                                                if (typeof playerList === 'string') {
+                                                    try {
+                                                        parsedPlayers = JSON.parse(playerList);
+                                                    } catch (e) {
+                                                        console.log('玩家列表不是JSON字符串，直接使用:', playerList);
+                                                    }
+                                                }
+                                                
+                                                // 格式化玩家列表显示
+                                                if (Array.isArray(parsedPlayers) && parsedPlayers.length > 0) {
+                                                    // 确保所有元素都是字符串
+                                                    const playerNames = parsedPlayers.map(p => 
+                                                        typeof p === 'string' ? p : 
+                                                        typeof p === 'object' ? JSON.stringify(p) : 
+                                                        String(p)
+                                                    );
+                                                    // 每个玩家单独一行显示
+                                                    return `在线玩家：\n${playerNames.join('\n')}`;
+                                                } else if (Array.isArray(parsedPlayers) && parsedPlayers.length === 0) {
+                                                    return '在线玩家：无';
+                                                } else if (parsedPlayers) {
+                                                    // 非数组格式，尝试显示原始数据
+                                                    return `玩家数据：${String(parsedPlayers).substring(0, 100)}`;
+                                                }
+                                            } else {
+                                                console.log('当前索引没有对应的玩家列表数据');
+                                            }
+                                        } else {
+                                            console.log('索引无效或玩家列表为空/非数组');
+                                        }
+                                    } catch (e) {
+                                        console.error('处理玩家列表时出错:', e);
+                                        return `错误: ${e.message.substring(0, 50)}`;
+                                    }
+                                    return '';
+                                }
+                            }
                         },
                         title: {
                             display: false
@@ -804,18 +964,28 @@ $minecraft_api = new MinecraftAPI();
                         const response = JSON.parse(xhr.responseText);
                         
                         if (response.success && response.data && response.data.labels && response.data.values) {
-                            console.log('历史数据格式正确，返回数据');
-                            // 检查数据是否为空
-                            if (response.data.labels.length > 0) {
-                                return {
-                                    labels: response.data.labels,
-                                    values: response.data.values
-                                };
+                                console.log('历史数据格式正确，返回数据');
+                                // 检查数据是否为空
+                                if (response.data.labels.length > 0) {
+                                    // 保存玩家列表数据
+                                    if (response.data.playerLists) {
+                                        modalPlayerLists = Array.isArray(response.data.playerLists) ? response.data.playerLists : [];
+                                        console.log('玩家列表数据已保存，数量:', modalPlayerLists.length);
+                                    } else {
+                                        modalPlayerLists = [];
+                                        console.log('没有找到玩家列表数据');
+                                    }
+                                    
+                                    return {
+                                        labels: response.data.labels,
+                                        values: response.data.values
+                                    };
+                                } else {
+                                    console.log('返回了空数据，使用0值数据');
+                                    modalPlayerLists = [];
+                                    return generateEmptyData(); // 返回近两小时的0值数据
+                                }
                             } else {
-                                console.log('返回了空数据，使用0值数据');
-                                return generateEmptyData(); // 返回近两小时的0值数据
-                            }
-                        } else {
                             console.error('获取历史数据失败:', response.error || '未知错误');
                             // 显示错误提示给用户
                             const modalBody = document.getElementById('modalBody');
@@ -904,12 +1074,22 @@ $minecraft_api = new MinecraftAPI();
                             console.log('历史数据格式正确，返回数据');
                             // 检查数据是否为空
                             if (response.data.labels.length > 0) {
+                                // 保存玩家列表数据
+                                if (response.data.playerLists) {
+                                    modalPlayerLists = Array.isArray(response.data.playerLists) ? response.data.playerLists : [];
+                                    console.log('玩家列表数据已保存，数量:', modalPlayerLists.length);
+                                } else {
+                                    modalPlayerLists = [];
+                                    console.log('没有找到玩家列表数据');
+                                }
+                                
                                 return {
                                     labels: response.data.labels,
                                     values: response.data.values
                                 };
                             } else {
                                 console.log('返回了空数据，使用0值数据');
+                                modalPlayerLists = [];
                                 return generateEmptyData(); // 返回近两小时的0值数据
                             }
                         } else {

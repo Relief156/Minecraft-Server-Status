@@ -16,22 +16,29 @@ if (!file_exists('installed.lock')) {
 }
 
 require_once 'config.php';
+require_once 'db.php';
 
 class MinecraftAPI {
-    private $api_url;
+    private $java_api_urls; // Java版API URL列表（支持多个URL按优先级顺序）
     private $bedrock_api_url;
-    private $log_file = 'api_log.txt';
-    private $icon_cache_dir = 'icon_cache';
-    private $icon_cache_ttl = 86400; // 缓存过期时间，单位秒（这里设置为24小时）
-    private $status_cache_ttl = 300; // 服务器状态缓存时间，单位秒（5分钟）
+    private $log_file = 'api.log';
+    private $icon_cache_dir = 'cache/icons';
+    private $icon_cache_ttl = 3600; // 缓存过期时间，单位秒（1小时）
+    private $status_cache_ttl = 30; // 服务器状态缓存时间，单位秒（30秒）
     private $status_cache = array(); // 内存缓存
     private $request_interval = 5; // 最小请求间隔，单位秒（防止请求过快）
     private $last_request_times = array(); // 记录每个服务器的最后请求时间
+    private $db; // 数据库连接
+    private $api_retry_count = 1; // API请求重试次数
 
     // 构造函数
     public function __construct() {
-        $this->api_url = API_URL;
-        $this->bedrock_api_url = 'https://api.mcsrvstat.us/bedrock/3/';
+        // 初始化API URL（从配置文件读取）
+        $this->java_api_urls = JAVA_API_URLS; // Java版API URL列表
+        $this->bedrock_api_url = BEDROCK_API_URL; // Bedrock版API URL
+        
+        // 初始化数据库连接
+        $this->db = new Database();
     }
 
     // 日志记录方法
@@ -73,42 +80,103 @@ class MinecraftAPI {
         // 更新最后请求时间
         $this->last_request_times[$cache_key] = $current_time;
         
-        // 根据服务器类型选择API端点
-        $api_url = ($server_type === 'bedrock') ? $this->bedrock_api_url : $this->api_url;
-        // 构建API请求URL
-        $url = $api_url . urlencode($server_address);
-        $this->log('请求URL: ' . $url);
-
-        // 初始化cURL
-        $ch = curl_init();
-
-        // 设置cURL选项
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        // 添加User-Agent头部以避免403错误
-        curl_setopt($ch, CURLOPT_USERAGENT, 'Minecraft-Server-Status-Monitor/1.0');
-        // 公益API不需要Authorization头
+        // 尝试使用主API和备用API的故障转移逻辑
+        // 首先尝试主API，如果主API失败才尝试备用API
+        $api_urls = array();
         
-        // 设置cURL超时时间
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10); // 10秒超时
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5); // 5秒连接超时
-
-        // 执行请求
-        $this->log('开始执行cURL请求');
-        $response = curl_exec($ch);
-        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $this->log('cURL请求完成，HTTP状态码: ' . $http_code);
-
-        // 检查错误
-        if (curl_errno($ch)) {
-            $error_message = 'API请求失败: ' . curl_error($ch);
-            $this->log($error_message);
-            curl_close($ch);
-            return ['error' => $error_message];
+        // 根据API配置构建优先顺序的URL数组
+        foreach ($this->java_api_urls as $index => $api_url) {
+            $api_urls['api_' . ($index + 1)] = $api_url;
         }
+        
+        $response = null;
+        $http_code = 0;
+        $error_message = '';
+        $success = false;
+        
+        foreach ($api_urls as $api_name => $api_url) {
+            // 只在主API失败时才尝试备用API
+            if ($api_name == 'secondary' && $success) {
+                $this->log('主API请求成功，跳过备用API');
+                break;
+            }
+            
+            $this->log('尝试使用' . ($api_name == 'primary' ? '主' : '备用') . 'API: ' . $api_url);
+            // 构建API请求URL
+            $url = $api_url . urlencode($server_address);
+            $this->log('请求URL: ' . $url);
 
-        // 关闭cURL
-        curl_close($ch);
+            // 初始化cURL
+            $ch = curl_init();
+
+            // 设置cURL选项
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            // 添加User-Agent头部以避免403错误
+            curl_setopt($ch, CURLOPT_USERAGENT, 'Minecraft-Server-Status-Monitor/1.0');
+            // 公益API不需要Authorization头
+            
+            // 设置cURL超时时间
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10); // 10秒超时
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5); // 5秒连接超时
+
+            // 执行请求
+            $this->log('开始执行cURL请求');
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $this->log('cURL请求完成，HTTP状态码: ' . $http_code);
+
+            // 检查错误
+            if (curl_errno($ch)) {
+                $error_message = 'API请求失败: ' . curl_error($ch);
+                $this->log($error_message);
+                curl_close($ch);
+                // 如果是主API失败，尝试备用API
+                if ($api_name == 'primary') {
+                    $this->log('主API请求失败，尝试备用API...');
+                    continue;
+                }
+            } else {
+                // 检查是否为429状态码（Too many requests）
+                if ($http_code == 429) {
+                    $error_message = 'API请求频率过高，请稍后再试（Too many requests）';
+                    $this->log($error_message);
+                    curl_close($ch);
+                    // 如果是主API遇到频率限制，尝试备用API
+                    if ($api_name == 'primary') {
+                        $this->log('主API请求频率过高，尝试备用API...');
+                        continue;
+                    } else {
+                        // 备用API也遇到频率限制，则设置特殊错误信息
+                        $error_message = '所有API都暂时无法处理请求，请稍后再试';
+                        return ['error' => $error_message, 'http_code' => 429];
+                    }
+                }
+                
+                // 检查响应是否为空
+                if (empty($response)) {
+                    $error_message = 'API返回空响应';
+                    $this->log($error_message);
+                    curl_close($ch);
+                    // 如果是主API失败，尝试备用API
+                    if ($api_name == 'primary') {
+                        $this->log('主API返回空响应，尝试备用API...');
+                        continue;
+                    }
+                } else {
+                    // 成功获取响应
+                    $this->log($api_name . ' API请求成功，获取到有效响应');
+                    $success = true;
+                    curl_close($ch);
+                    break;
+                }
+            }
+        }
+        
+        if (!$success) {
+            $this->log('所有API请求均失败');
+            return ['error' => '无法连接到API服务器: ' . $error_message];
+        }
         
         // 记录响应内容（限制长度，避免日志过大）
         $response_preview = strlen($response) > 500 ? substr($response, 0, 500) . '...' : $response;
@@ -120,9 +188,26 @@ class MinecraftAPI {
 
         // 检查响应是否有效
         if (json_last_error() !== JSON_ERROR_NONE) {
-            $error_message = '无效的API响应: ' . json_last_error_msg();
+            // 获取JSON解析错误信息
+            $json_error = json_last_error_msg();
+            $error_message = '无效的API响应: ' . $json_error;
             $this->log($error_message);
-            return ['error' => $error_message];
+            
+            // 如果是429状态码，提供更友好的错误信息
+            if (isset($http_code) && $http_code == 429) {
+                $error_message = 'API请求过于频繁，请稍后再试';
+            } 
+            // 如果是非JSON格式的错误消息，尝试提取原始消息
+            else if (!empty($response) && !is_array($data)) {
+                // 去除多余的空白字符和HTML标签
+                $clean_response = trim(strip_tags($response));
+                // 如果清理后的响应不为空，使用它作为错误消息的一部分
+                if (!empty($clean_response)) {
+                    $error_message .= '，原始响应: ' . substr($clean_response, 0, 100);
+                }
+            }
+            
+            return ['error' => $error_message, 'http_code' => $http_code];
         }
         
         // 记录解析后的响应数据结构
@@ -137,12 +222,12 @@ class MinecraftAPI {
         // 转换API响应格式以匹配index.php的期望格式
         $formatted_data = [];
         
-        // 复制基本字段 - 处理mcsrvstat.us API格式
+        // 复制基本字段 - 处理用户自建API格式
         if (isset($data['online'])) {
             $formatted_data['online'] = $data['online'];
         }
         
-        // 转换玩家计数字段 - mcsrvstat.us将玩家信息放在players对象中
+        // 转换玩家计数字段
         if (isset($data['players']) && isset($data['players']['online'])) {
             $formatted_data['players_online'] = $data['players']['online'];
         }
@@ -150,29 +235,45 @@ class MinecraftAPI {
             $formatted_data['players_max'] = $data['players']['max'];
         }
         
+        // 处理玩家列表
+        if (isset($data['players']) && isset($data['players']['list']) && !empty($data['players']['list'])) {
+            $player_list = $data['players']['list'];
+            // 将逗号分隔的玩家列表转换为数组
+            $players = explode(', ', $player_list);
+            $formatted_data['player_list'] = $players;
+        }
+        
         // 复制版本信息
         if (isset($data['version'])) {
             $formatted_data['version'] = $data['version'];
         }
         
-        // 处理MOTD - mcsrvstat.us提供多种格式的MOTD
+        // 处理MOTD - 支持mcsy.net返回的嵌套JSON格式的MOTD
         if (isset($data['motd'])) {
-            // 保留HTML格式的MOTD用于前端显示
-            if (isset($data['motd']['html'])) {
-                // 合并多行HTML为带换行的内容
-                $formatted_data['motd_html'] = implode('<br>', $data['motd']['html']);
-            }
-            
-            // 同时保留纯文本格式用于备用显示
-            if (isset($data['motd']['clean'])) {
-                $formatted_data['motd'] = implode(' ', $data['motd']['clean']);
-            } elseif (isset($data['motd']['html'])) {
-                $formatted_data['motd'] = strip_tags(implode(' ', $data['motd']['html']));
+            // 尝试解析JSON格式的MOTD
+            $motd_json = json_decode($data['motd'], true);
+            if ($motd_json !== null) {
+                // 提取纯文本MOTD内容
+                $motd_text = $this->extractMOTDText($motd_json);
+                $formatted_data['motd'] = $motd_text;
+                
+                // 生成HTML格式的MOTD（保留颜色和格式）
+                $motd_html = $this->convertMOTDToHTML($motd_json);
+                $formatted_data['motd_html'] = $motd_html;
+            } else {
+                // 如果解析失败，直接使用原始文本
+                $formatted_data['motd'] = $data['motd'];
+                $formatted_data['motd_html'] = $this->convertMinecraftColorsToHTML($data['motd']);
             }
         }
         
-        // 获取服务器图标，带本地缓存
-        $formatted_data['server_icon'] = $this->getCachedServerIcon($server_address);
+        // 处理favicon - 用户自建API可能直接返回base64编码的图标
+        if (isset($data['favicon'])) {
+            $formatted_data['server_icon'] = $data['favicon'];
+        } else {
+            // 否则从icon接口获取图标（如果需要）
+            $formatted_data['server_icon'] = $this->getCachedServerIcon($server_address);
+        }
         
         // 为离线服务器添加额外信息，提高用户体验
         // 无论服务器是否在线，都添加基本连接信息
@@ -211,6 +312,217 @@ class MinecraftAPI {
         return $formatted_data;
     }
     
+    // 递归函数来解析嵌套的extra数组，提取纯文本
+    private function extractMOTDText($motd_data) {
+        $text = '';
+        if (is_array($motd_data)) {
+            // 如果有text字段，添加到结果中
+            if (isset($motd_data['text'])) {
+                $text .= $motd_data['text'];
+            }
+            // 如果有extra字段，递归处理
+            if (isset($motd_data['extra']) && is_array($motd_data['extra'])) {
+                foreach ($motd_data['extra'] as $extra) {
+                    $text .= $this->extractMOTDText($extra);
+                }
+            }
+        } elseif (is_string($motd_data)) {
+            // 如果是字符串，直接返回
+            $text .= $motd_data;
+        }
+        return $text;
+    }
+    
+    // 递归函数来解析嵌套的extra数组并转换为HTML格式（保留颜色和格式）
+    private function convertMOTDToHTML($motd_data) {
+        $html = '';
+        if (is_array($motd_data)) {
+            // 处理样式
+            $styles = [];
+            if (isset($motd_data['color'])) {
+                $color = $motd_data['color'];
+                // 检查是否是十六进制颜色值（以#开头并至少有6个字符）
+                if (strpos($color, '#') === 0 && strlen($color) >= 6) {
+                    $styles[] = 'color: ' . $color;
+                } else {
+                    // Minecraft颜色代码映射到CSS颜色
+                    $color_map = [
+                        'black' => '#000000',
+                        'dark_blue' => '#0000AA',
+                        'dark_green' => '#00AA00',
+                        'dark_aqua' => '#00AAAA',
+                        'dark_red' => '#AA0000',
+                        'dark_purple' => '#AA00AA',
+                        'gold' => '#FFAA00',
+                        'gray' => '#AAAAAA',
+                        'dark_gray' => '#555555',
+                        'blue' => '#5555FF',
+                        'green' => '#55FF55',
+                        'aqua' => '#55FFFF',
+                        'red' => '#FF5555',
+                        'light_purple' => '#FF55FF',
+                        'yellow' => '#FFFF55',
+                        'white' => '#FFFFFF'
+                    ];
+                    if (isset($color_map[$color])) {
+                        $styles[] = 'color: ' . $color_map[$color];
+                    }
+                }
+            }
+            
+            if (isset($motd_data['bold']) && $motd_data['bold']) {
+                $styles[] = 'font-weight: bold';
+            }
+            
+            if (isset($motd_data['italic']) && $motd_data['italic']) {
+                $styles[] = 'font-style: italic';
+            }
+            
+            if (isset($motd_data['underlined']) && $motd_data['underlined']) {
+                $styles[] = 'text-decoration: underline';
+            }
+            
+            // 开始样式
+            if (!empty($styles)) {
+                $html .= '<span style="' . implode('; ', $styles) . '">';
+            }
+            
+            // 添加文本内容并处理换行符
+            if (isset($motd_data['text'])) {
+                $text = $motd_data['text'];
+                // 特殊处理单独的换行符对象
+                if ($text === "\n" || $text === "\\n") {
+                    $html .= '<br>';
+                } else {
+                    // 增强换行符处理，确保所有类型的换行符都能被识别
+                    // 先转义所有可能的换行符表示
+                    $text_with_breaks = str_replace(['\\n', "\n", "\r\n", "\r"], '<br>', $text);
+                    // 再处理Minecraft颜色代码
+                    $text_with_colors = $this->convertMinecraftColorsToHTML($text_with_breaks);
+                    $html .= $text_with_colors;
+                }
+            }
+            
+            // 处理嵌套的extra内容
+            if (isset($motd_data['extra']) && is_array($motd_data['extra'])) {
+                foreach ($motd_data['extra'] as $extra) {
+                    $html .= $this->convertMOTDToHTML($extra);
+                }
+            }
+            
+            // 结束样式
+            if (!empty($styles)) {
+                $html .= '</span>';
+            }
+        } elseif (is_string($motd_data)) {
+            // 如果是纯字符串，先处理换行符
+            $text_with_breaks = str_replace(['\\n', "\n", "\r\n", "\r"], '<br>', $motd_data);
+            // 再处理Minecraft颜色代码
+            $text_with_colors = $this->convertMinecraftColorsToHTML($text_with_breaks);
+            $html .= $text_with_colors;
+        }
+        return $html;
+    }
+    
+    // 将Minecraft颜色代码转换为HTML
+    private function convertMinecraftColorsToHTML($text) {
+        // 检查是否包含Minecraft颜色代码
+        if (strpos($text, '§') === false) {
+            return htmlspecialchars($text, ENT_NOQUOTES, 'UTF-8', false);
+        }
+
+        // Minecraft颜色代码映射
+        $color_map = [
+            '0' => '#000000', // 黑色
+            '1' => '#0000AA', // 深蓝色
+            '2' => '#00AA00', // 深绿色
+            '3' => '#00AAAA', // 深青色
+            '4' => '#AA0000', // 深红色
+            '5' => '#AA00AA', // 深紫色
+            '6' => '#FFAA00', // 金色
+            '7' => '#AAAAAA', // 灰色
+            '8' => '#555555', // 深灰色
+            '9' => '#5555FF', // 蓝色
+            'a' => '#55FF55', // 绿色
+            'b' => '#55FFFF', // 青色
+            'c' => '#FF5555', // 红色
+            'd' => '#FF55FF', // 紫色
+            'e' => '#FFFF55', // 黄色
+            'f' => '#FFFFFF', // 白色
+        ];
+        
+        // 样式代码映射
+        $style_map = [
+            'l' => 'font-weight: bold', // 粗体
+            'o' => 'font-style: italic', // 斜体
+            'n' => 'text-decoration: underline', // 下划线
+            'm' => 'text-decoration: line-through', // 删除线
+            'k' => 'text-shadow: 2px 2px 4px rgba(0,0,0,0.5);', // 闪烁（这里用阴影模拟）
+            'r' => 'reset' // 重置样式
+        ];
+        
+        $html = '';
+        $current_styles = [];
+        $length = mb_strlen($text, 'UTF-8');
+        
+        for ($i = 0; $i < $length; $i++) {
+            // 使用mb_substr确保正确处理多字节字符
+            $char = mb_substr($text, $i, 1, 'UTF-8');
+            
+            // 检查是否是颜色代码开始
+            if ($char === '§' && $i + 1 < $length) {
+                $code = mb_substr($text, $i + 1, 1, 'UTF-8');
+                $code = strtolower($code);
+                $i++;
+                
+                // 重置样式
+                if ($code === 'r') {
+                    if (!empty($current_styles)) {
+                        $html .= '</span>';
+                        $current_styles = [];
+                    }
+                }
+                // 处理颜色代码
+                else if (isset($color_map[$code])) {
+                    // 关闭当前样式
+                    if (!empty($current_styles)) {
+                        $html .= '</span>';
+                    }
+                    // 添加新颜色样式
+                    $current_styles = ['color: ' . $color_map[$code]];
+                    $html .= '<span style="' . implode('; ', $current_styles) . '">';
+                }
+                // 处理样式代码
+                else if (isset($style_map[$code])) {
+                    if ($style_map[$code] === 'reset') {
+                        if (!empty($current_styles)) {
+                            $html .= '</span>';
+                            $current_styles = [];
+                        }
+                    } else {
+                        // 关闭当前样式
+                        if (!empty($current_styles)) {
+                            $html .= '</span>';
+                        }
+                        // 添加新样式
+                        $current_styles = [$style_map[$code]];
+                        $html .= '<span style="' . implode('; ', $current_styles) . '">';
+                    }
+                }
+            } else {
+                // 普通字符，转义HTML特殊字符
+                $html .= htmlspecialchars($char, ENT_NOQUOTES, 'UTF-8', false);
+            }
+        }
+        
+        // 关闭所有未闭合的样式标签
+        if (!empty($current_styles)) {
+            $html .= '</span>';
+        }
+        
+        return $html;
+    }
+    
     // 获取缓存的服务器图标
     private function getCachedServerIcon($server_address) {
         // 确保缓存目录存在
@@ -229,8 +541,8 @@ class MinecraftAPI {
             return $cache_file;
         }
         
-        // 如果缓存不存在或已过期，从API获取新图标并缓存
-        $icon_url = 'https://api.mcsrvstat.us/icon/' . urlencode($server_address);
+        // 如果缓存不存在或已过期，从用户自建API获取新图标并缓存
+        $icon_url = 'http://cow.mc6.cn:10709/icon/' . urlencode($server_address);
         $this->log('获取新图标: ' . $icon_url);
         
         // 使用cURL获取图标
@@ -238,22 +550,19 @@ class MinecraftAPI {
         curl_setopt($ch, CURLOPT_URL, $icon_url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_USERAGENT, 'Minecraft-Server-Status-Monitor/1.0');
-        curl_setopt($ch, CURLOPT_HEADER, true);
+        curl_setopt($ch, CURLOPT_HEADER, false); // 不需要获取响应头
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5); // 5秒超时
         
         $response = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $header_size = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
         
         curl_close($ch);
         
         // 检查响应
-        if ($http_code == 200) {
-            // 分离响应头和响应体
-            $body = substr($response, $header_size);
-            
+        if ($http_code == 200 && !empty($response)) {
             // 保存图标到缓存文件
-            file_put_contents($cache_file, $body);
-            $this->log('图标已保存到缓存文件');
+            file_put_contents($cache_file, $response);
+            $this->log('图标已保存到缓存: ' . $cache_file);
             return $cache_file;
         } else {
             $this->log('无法获取图标，HTTP状态码: ' . $http_code);
@@ -262,8 +571,9 @@ class MinecraftAPI {
                 $this->log('返回已过期的缓存图标');
                 return $cache_file;
             }
-            // 返回默认的API链接作为备用
-            return $icon_url;
+            // 获取失败，返回默认图标
+            $this->log('获取图标失败，返回默认图标');
+            return 'assets/default-icon.png';
         }
     }
     
@@ -299,6 +609,61 @@ class MinecraftAPI {
         return array(
             'labels' => $labels,
             'values' => $values
+        );
+    }
+    
+    // 获取服务器原始玩家历史数据（包含玩家列表）
+    public function getRawPlayerHistoryData($server_id, $days = 1) {
+        require_once 'db.php';
+        
+        $db = new Database();
+        $result = $db->getRawPlayerHistory($server_id, $days);
+        
+        // 初始化返回数据结构，确保即使没有数据也返回空数组
+        $labels = array();
+        $values = array();
+        $playerLists = array();
+        
+        if ($result === false) {
+            // 记录错误日志
+            $this->log('获取原始历史数据失败，数据库查询错误');
+            // 返回空的数据结构而不是false
+            return array(
+                'labels' => $labels,
+                'values' => $values,
+                'playerLists' => $playerLists
+            );
+        }
+        
+        // 处理查询结果
+        while ($row = $result->fetch_assoc()) {
+            // 格式化时间标签
+            $time_label = date('Y-m-d H:i', strtotime($row['record_time']));
+            $labels[] = $time_label;
+            $values[] = $row['players_online'];
+            
+            // 解析玩家列表JSON
+            $player_list = array();
+            if (!empty($row['player_list_json'])) {
+                try {
+                    $player_list = json_decode($row['player_list_json'], true);
+                    // 确保是数组格式
+                    if (!is_array($player_list)) {
+                        $player_list = array();
+                    }
+                } catch (Exception $e) {
+                    $this->log('解析玩家列表失败: ' . $e->getMessage());
+                }
+            }
+            $playerLists[] = $player_list;
+        }
+        
+        $this->log('原始历史数据查询完成，数据点数量: ' . count($values));
+        
+        return array(
+            'labels' => $labels,
+            'values' => $values,
+            'playerLists' => $playerLists
         );
     }
     
@@ -349,6 +714,42 @@ class MinecraftAPI {
                 }
                 break;
             
+            case 'get_player_list':
+                if (isset($_GET['server_id'])) {
+                    $server_id = $_GET['server_id'];
+                    $player_data = $this->getPlayerListData($server_id);
+                    if (is_array($player_data)) {
+                        $this->sendSuccessResponse($player_data);
+                    } else {
+                        $this->sendErrorResponse('获取玩家列表失败');
+                    }
+                } else {
+                    $this->sendErrorResponse('缺少服务器ID参数');
+                }
+                break;
+                
+            case 'get_raw_player_history':
+                if (isset($_GET['server_id'])) {
+                    $server_id = $_GET['server_id'];
+                    // 使用floatval保留小数天数，而不是intval
+                    $days = isset($_GET['days']) ? floatval($_GET['days']) : 1;
+                    // 允许0作为查询所有记录的特殊值
+                    if ($days != 0) {
+                        // 限制天数范围，允许小数天数但设置最小为0.01(约15分钟)
+                        $days = max(0.01, min(30, $days));
+                    }
+                    $history_data = $this->getRawPlayerHistoryData($server_id, $days);
+                    // 检查是否为数组，而不仅仅是真值检查，确保空数据也能正确返回
+                    if (is_array($history_data)) {
+                        $this->sendSuccessResponse($history_data);
+                    } else {
+                        $this->sendErrorResponse('获取原始历史数据失败');
+                    }
+                } else {
+                    $this->sendErrorResponse('缺少服务器ID参数');
+                }
+                break;
+            
             default:
                 $this->sendErrorResponse('未知的操作');
         }
@@ -374,6 +775,40 @@ class MinecraftAPI {
             }
         }
         return $data;
+    }
+
+    // 获取玩家列表数据
+    private function getPlayerListData($server_id) {
+        try {
+            // 从player_history表获取最新的玩家列表数据
+            $sql = "SELECT player_list_json FROM player_history WHERE server_id = ? ORDER BY record_time DESC LIMIT 1";
+            
+            // 获取数据库连接
+            $conn = $this->db->getConnection();
+            
+            // 使用mysqli连接对象准备语句
+            $stmt = $conn->prepare($sql);
+            $stmt->bind_param('i', $server_id);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            
+            if ($result->num_rows > 0) {
+                $row = $result->fetch_assoc();
+                $player_list_json = $row['player_list_json'];
+                
+                // 如果玩家列表不为空，则解析JSON
+                if (!empty($player_list_json)) {
+                    $player_list = json_decode($player_list_json, true);
+                    return $player_list;
+                }
+            }
+            
+            // 如果没有数据或解析失败，返回空数组
+            return array();
+        } catch (Exception $e) {
+            $this->log('获取玩家列表数据失败: ' . $e->getMessage());
+            return false;
+        }
     }
 
     // 发送成功响应
@@ -463,6 +898,9 @@ class MinecraftAPI {
         // 确保立即输出所有内容并终止脚本
         exit;
     }
+    
+    // 注意：玩家列表数据现在通过savePlayerHistory方法直接存储在player_history表的player_list_json字段中
+
 }
 
 // 只有当本文件被直接访问时才实例化并处理请求

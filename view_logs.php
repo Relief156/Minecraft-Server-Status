@@ -17,7 +17,7 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
 }
 
 // 日志文件路径
-$log_file = 'api_log.txt';
+$log_file = 'api.log';
 
 // 获取日志内容
 $log_content = '';
