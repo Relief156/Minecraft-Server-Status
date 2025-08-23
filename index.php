@@ -416,7 +416,18 @@ $minecraft_api = new MinecraftAPI();
                         <div class="server-body">
                             <div class="server-info">
                                 <label>地址</label>
-                                <p><?= $server['address'] ?></p>
+                                <p>
+                                    <?php
+                                    // 检查是否显示IP
+                                    if (isset($server['show_ip']) && $server['show_ip']) {
+                                        echo $server['address'];
+                                    } else {
+                                        // 如果不显示IP，使用替代描述
+                                        $description = !empty($server['ip_description']) ? $server['ip_description'] : 'IP地址已隐藏';
+                                        echo $description;
+                                    }
+                                    ?>
+                                </p>
                             </div>
                             <div class="server-info">
                                 <label>类型</label>

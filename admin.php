@@ -38,6 +38,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_server'])) {
     $server_type = isset($_POST['server_type']) ? $_POST['server_type'] : 'java';
     $sort_weight = isset($_POST['sort_weight']) ? intval($_POST['sort_weight']) : 1000;
     $show_player_history = isset($_POST['show_player_history']) ? 1 : 0;
+    $show_ip = isset($_POST['show_ip']) ? 1 : 0;
+    $ip_description = isset($_POST['ip_description']) ? $_POST['ip_description'] : '';
 
     if (empty($name) || empty($address)) {
         $error = '请输入服务器名称和地址';
@@ -47,6 +49,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_server'])) {
             $server_id = $db->getConnection()->insert_id;
             // 设置显示历史在线人数的选项
             $db->setShowPlayerHistory($server_id, $show_player_history);
+            // 设置显示IP的选项
+            $db->setShowIp($server_id, $show_ip);
+            // 设置IP替代描述
+            $db->setIpDescription($server_id, $ip_description);
             $success = '服务器已成功添加';
         } else {
             $error = '添加服务器失败';
@@ -62,6 +68,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_server'])) {
     $server_type = isset($_POST['server_type']) ? $_POST['server_type'] : 'java';
     $sort_weight = isset($_POST['sort_weight']) ? intval($_POST['sort_weight']) : null;
     $show_player_history = isset($_POST['show_player_history']) ? 1 : 0;
+    $show_ip = isset($_POST['show_ip']) ? 1 : 0;
+    $ip_description = isset($_POST['ip_description']) ? $_POST['ip_description'] : '';
 
     if (empty($name) || empty($address)) {
         $error = '请输入服务器名称和地址';
@@ -69,6 +77,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_server'])) {
         if ($db->updateServer($id, $name, $address, $server_type, $sort_weight)) {
             // 设置显示历史在线人数的选项
             $db->setShowPlayerHistory($id, $show_player_history);
+            // 设置显示IP的选项
+            $db->setShowIp($id, $show_ip);
+            // 设置IP替代描述
+            $db->setIpDescription($id, $ip_description);
             $success = '服务器已成功更新';
         } else {
             $error = '更新服务器失败';
@@ -360,6 +372,21 @@ if (isset($_GET['action']) && $_GET['action'] === 'edit' && isset($_GET['id'])) 
                         </label>
                     </label>
                     <small style="color: #666;">开启表示在服务器状态页面可以查看历史在线人数图表，关闭则默认不显示但仍记录数据</small>
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        显示服务器IP地址
+                        <label class="switch">
+                            <input type="checkbox" id="show_ip" name="show_ip" value="1"<?= $edit_server && isset($edit_server['show_ip']) && $edit_server['show_ip'] ? ' checked' : (empty($edit_server) ? ' checked' : '') ?>>
+                            <span class="slider round"></span>
+                        </label>
+                    </label>
+                    <small style="color: #666;">开启表示在服务器状态页面显示IP地址，关闭则隐藏IP地址</small>
+                </div>
+                <div class="form-group">
+                    <label for="ip_description">IP替代描述文本 (不显示IP时使用)</label>
+                    <input type="text" id="ip_description" name="ip_description" value="<?= $edit_server ? htmlspecialchars($edit_server['ip_description']) : '' ?>">
+                    <small style="color: #666;">当关闭显示IP时，将显示此文本代替IP地址，例如："加群xxxxx以获取ip"</small>
                 </div>
                 <button type="submit" class="btn" name="<?= $edit_server ? 'update_server' : 'add_server' ?>">
                     <?= $edit_server ? '更新服务器' : '添加服务器' ?>

@@ -172,7 +172,7 @@ class Database {
         $this->conn->close();
     }
     
-    // 检查并更新表结构，添加show_player_history字段
+    // 检查并更新表结构，添加show_player_history、show_ip和ip_description字段
     public function checkAndUpdateServerTable() {
         // 检查servers表是否包含show_player_history字段
         $checkColumn = $this->conn->query("SHOW COLUMNS FROM servers LIKE 'show_player_history'");
@@ -183,6 +183,32 @@ class Database {
             
             if (!$alterTable) {
                 error_log("添加show_player_history字段失败: " . $this->conn->error);
+                return false;
+            }
+        }
+        
+        // 检查是否包含show_ip字段
+        $checkShowIp = $this->conn->query("SHOW COLUMNS FROM servers LIKE 'show_ip'");
+        
+        if (!$checkShowIp || $checkShowIp->num_rows === 0) {
+            // 如果不包含，添加show_ip字段，默认为1（显示IP）
+            $alterTable = $this->conn->query("ALTER TABLE servers ADD COLUMN show_ip TINYINT(1) DEFAULT 1 AFTER show_player_history");
+            
+            if (!$alterTable) {
+                error_log("添加show_ip字段失败: " . $this->conn->error);
+                return false;
+            }
+        }
+        
+        // 检查是否包含ip_description字段
+        $checkIpDesc = $this->conn->query("SHOW COLUMNS FROM servers LIKE 'ip_description'");
+        
+        if (!$checkIpDesc || $checkIpDesc->num_rows === 0) {
+            // 如果不包含，添加ip_description字段，默认为空字符串
+            $alterTable = $this->conn->query("ALTER TABLE servers ADD COLUMN ip_description TEXT DEFAULT '' AFTER show_ip");
+            
+            if (!$alterTable) {
+                error_log("添加ip_description字段失败: " . $this->conn->error);
                 return false;
             }
         }
@@ -209,6 +235,91 @@ class Database {
         $stmt->close();
         
         return $result;
+    }
+    
+        // 设置服务器是否显示IP地址
+    public function setShowIp($server_id, $show_ip) {
+        // 确保字段存在
+        $this->checkAndUpdateServerTable();
+        
+        $sql = "UPDATE servers SET show_ip = ?, updated_at = NOW() WHERE id = ?";
+        $stmt = $this->conn->prepare($sql);
+        
+        if ($stmt === false) {
+            error_log("设置显示IPprepare语句失败: " . $this->conn->error);
+            return false;
+        }
+        
+        $show_ip = $show_ip ? 1 : 0;
+        $stmt->bind_param("ii", $show_ip, $server_id);
+        $result = $stmt->execute();
+        $stmt->close();
+        
+        return $result;
+    }
+    
+    // 获取服务器是否显示IP地址的设置
+    public function getShowIp($server_id) {
+        // 确保字段存在
+        $this->checkAndUpdateServerTable();
+        
+        $sql = "SELECT show_ip FROM servers WHERE id = ?";
+        $stmt = $this->conn->prepare($sql);
+        
+        if ($stmt === false) {
+            error_log("获取显示IP设置prepare语句失败: " . $this->conn->error);
+            return true; // 默认显示
+        }
+        
+        $stmt->bind_param("i", $server_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $row = $result->fetch_assoc();
+        $stmt->close();
+        
+        return $row ? ($row['show_ip'] == 1) : true; // 默认显示
+    }
+    
+    // 设置IP地址的替代描述文本
+    public function setIpDescription($server_id, $description) {
+        // 确保字段存在
+        $this->checkAndUpdateServerTable();
+        
+        $sql = "UPDATE servers SET ip_description = ?, updated_at = NOW() WHERE id = ?";
+        $stmt = $this->conn->prepare($sql);
+        
+        if ($stmt === false) {
+            error_log("设置IP描述prepare语句失败: " . $this->conn->error);
+            return false;
+        }
+        
+        $stmt->bind_param("si", $description, $server_id);
+        $result = $stmt->execute();
+        $stmt->close();
+        
+        return $result;
+    }
+    
+    // 获取IP地址的替代描述文本
+    public function getIpDescription($server_id) {
+        // 确保字段存在
+        $this->checkAndUpdateServerTable();
+        
+        $sql = "SELECT ip_description FROM servers WHERE id = ?";
+        $stmt = $this->conn->prepare($sql);
+        
+        if ($stmt === false) {
+            error_log("获取IP描述prepare语句失败: " . $this->conn->error);
+            return ''; // 默认空字符串
+        }
+        
+        $stmt->bind_param("i", $server_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $row = $result->fetch_assoc();
+        $stmt->close();
+        
+        return $row ? $row['ip_description'] : ''; // 默认空字符串
     }
     
     // 获取服务器是否显示历史在线人数的设置
