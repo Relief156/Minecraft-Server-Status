@@ -19,10 +19,56 @@ if (!isset($_SESSION['admin_logged_in']) || $_SESSION['admin_logged_in'] !== tru
 // 日志文件路径
 $log_file = 'api.log';
 
-// 获取日志内容
+// 获取日志内容 - 只显示当天的日志
 $log_content = '';
 if (file_exists($log_file)) {
-    $log_content = file_get_contents($log_file);
+    try {
+        // 设置最大读取行数和最大文件大小限制
+        $max_lines = 500; // 最多显示500行
+        $max_file_size = 500 * 1024; // 最大500KB
+        
+        // 获取当前日期（格式：YYYY-MM-DD）
+        $current_date = date('Y-m-d');
+        
+        // 检查文件大小
+        $file_size = filesize($log_file);
+        
+        if ($file_size > 0) {
+            // 读取文件内容并筛选当天的日志
+            $file = fopen($log_file, 'r');
+            if ($file) {
+                $today_lines = [];
+                $line_count = 0;
+                
+                // 逐行读取并筛选当天的日志
+                while (($line = fgets($file)) !== false) {
+                    // 检查日志行是否包含今天的日期
+                    if (strpos($line, "[$current_date") !== false) {
+                        $today_lines[] = $line;
+                        $line_count++;
+                        
+                        // 如果达到最大行数限制，停止读取
+                        if ($line_count >= $max_lines) {
+                            break;
+                        }
+                    }
+                }
+                fclose($file);
+                
+                // 如果有当天的日志行
+                if (!empty($today_lines)) {
+                    $log_content = implode('', $today_lines);
+                } else {
+                    // 没有当天的日志，但文件不为空，可能是文件刚刚被归档
+                    $log_content = "[今天暂无新的日志记录]\n";
+                }
+            } else {
+                $log_content = "[错误: 无法打开日志文件]";
+            }
+        }
+    } catch (Exception $e) {
+        $log_content = "[错误: 读取日志时发生异常 - " . $e->getMessage() . "]";
+    }
 }
 
 // 清空日志功能

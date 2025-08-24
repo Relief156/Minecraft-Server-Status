@@ -43,9 +43,93 @@ class MinecraftAPI {
 
     // 日志记录方法
     private function log($message) {
+        // 检查是否需要归档前一天的日志
+        $this->archiveLogIfNeeded();
+        
         $timestamp = date('Y-m-d H:i:s');
         $log_entry = "[$timestamp] $message\n";
         file_put_contents($this->log_file, $log_entry, FILE_APPEND);
+    }
+
+    // 检查并归档日志文件（如果日期已变更）
+    private function archiveLogIfNeeded() {
+        // 如果日志文件不存在，不需要归档
+        if (!file_exists($this->log_file)) {
+            return;
+        }
+        
+        // 获取日志文件的最后修改日期和当前日期
+        $log_file_date = date('Y-m-d', filemtime($this->log_file));
+        $current_date = date('Y-m-d');
+        
+        // 如果最后修改日期不是今天，说明是跨天了，需要归档
+        if ($log_file_date !== $current_date) {
+            // 确保logs目录存在
+            if (!file_exists('logs')) {
+                if (!mkdir('logs', 0755, true)) {
+                    // 添加错误日志记录
+                    $error_message = "[归档错误] 无法创建logs目录";
+                    error_log($error_message);
+                    return; // 无法创建目录，终止归档
+                }
+            }
+            
+            // 归档文件名：logs/YYYY-MM-DD_api.log.gz
+            $archive_file = 'logs/' . $log_file_date . '_api.log.gz';
+            
+            try {
+                // 读取当前日志内容
+                $log_content = file_get_contents($this->log_file);
+                if ($log_content === false) {
+                    throw new Exception("无法读取日志文件内容");
+                }
+                
+                // 尝试压缩归档 - 使用备用方法
+                if (function_exists('gzopen')) {
+                    // 方法1：使用gzopen/gzwrite
+                    $gz_handle = gzopen($archive_file, 'w9'); // 使用最高压缩级别
+                    if ($gz_handle === false) {
+                        throw new Exception("无法创建GZIP文件");
+                    }
+                    
+                    if (gzwrite($gz_handle, $log_content) === false) {
+                        throw new Exception("写入GZIP文件失败");
+                    }
+                    
+                    gzclose($gz_handle);
+                } else {
+                    // 方法2：备用方法，使用file_put_contents和base64_encode
+                    // 如果服务器不支持gzip函数，使用这种方式保存非压缩版本
+                    $archive_file = str_replace('.gz', '', $archive_file); // 移除.gz扩展名
+                    if (file_put_contents($archive_file, $log_content) === false) {
+                        throw new Exception("无法创建归档文件");
+                    }
+                }
+                
+                // 清空原日志文件
+                if (file_put_contents($this->log_file, '') === false) {
+                    throw new Exception("清空原日志文件失败");
+                }
+                
+                // 记录归档操作
+                $archive_message = "日志已归档到: $archive_file";
+                $timestamp = date('Y-m-d H:i:s');
+                file_put_contents($this->log_file, "[$timestamp] $archive_message\n", FILE_APPEND);
+                
+            } catch (Exception $e) {
+                // 添加错误日志记录
+                $error_message = "[归档错误] " . $e->getMessage();
+                error_log($error_message);
+                
+                // 也记录到当前日志文件（如果可能）
+                try {
+                    $timestamp = date('Y-m-d H:i:s');
+                    file_put_contents($this->log_file, "[$timestamp] $error_message\n", FILE_APPEND);
+                } catch (Exception $e2) {
+                    // 如果无法写入日志文件，忽略
+                }
+            }
+        }
     }
 
     // 获取服务器状态
@@ -667,6 +751,154 @@ class MinecraftAPI {
         );
     }
     
+    // 使用cURL多线程并行获取多个服务器状态
+    public function getServersStatusInParallel($servers) {
+        $current_time = time();
+        $cache_key_prefix = 'parallel_';
+        $mh = curl_multi_init();
+        $curl_handles = array();
+        $server_results = array();
+
+        // 初始化API URL（从配置文件读取）
+        $api_urls = array();
+        foreach ($this->java_api_urls as $index => $api_url) {
+            $api_urls['api_' . ($index + 1)] = $api_url;
+        }
+        $primary_api_url = reset($api_urls);
+
+        // 为每个服务器创建cURL句柄
+        foreach ($servers as $server) {
+            $server_address = $server['address'];
+            $server_type = isset($server['type']) ? $server['type'] : 'java';
+            $cache_key = $cache_key_prefix . $server_address . ':' . $server_type;
+
+            // 检查是否有缓存并且缓存未过期
+            if (isset($this->status_cache[$cache_key]) && 
+                ($current_time - $this->status_cache[$cache_key]['timestamp']) < $this->status_cache_ttl) {
+                
+                $this->log('使用缓存的服务器状态数据: ' . $server_address);
+                $server_results[$server_address] = $this->status_cache[$cache_key]['data'];
+                continue;
+            }
+
+            // 构建API请求URL
+            $url = $primary_api_url . urlencode($server_address);
+            $this->log('创建并行请求: ' . $url);
+
+            // 初始化cURL
+            $ch = curl_init();
+
+            // 设置cURL选项
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_USERAGENT, 'Minecraft-Server-Status-Monitor/1.0');
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10); // 10秒超时
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5); // 5秒连接超时
+
+            // 将cURL句柄添加到多线程批处理
+            curl_multi_add_handle($mh, $ch);
+            $curl_handles[$server_address] = $ch;
+        }
+
+        // 执行所有并行请求
+        $running = null;
+        do {
+            curl_multi_exec($mh, $running);
+            curl_multi_select($mh);
+        } while ($running > 0);
+
+        // 处理响应
+        foreach ($curl_handles as $server_address => $ch) {
+            $response = curl_multi_getcontent($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $this->log('并行请求完成: ' . $server_address . ', HTTP状态码: ' . $http_code);
+
+            // 检查错误
+            if (curl_errno($ch)) {
+                $error_message = 'API请求失败: ' . curl_error($ch);
+                $this->log($error_message);
+                $server_results[$server_address] = ['error' => $error_message];
+            } else {
+                // 解析JSON响应
+                $data = json_decode($response, true);
+
+                // 检查响应是否有效
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    $json_error = json_last_error_msg();
+                    $error_message = '无效的API响应: ' . $json_error;
+                    $this->log($error_message);
+                    $server_results[$server_address] = ['error' => $error_message];
+                } else {
+                    // 转换API响应格式
+                    $formatted_data = [];
+                    if (isset($data['online'])) {
+                        $formatted_data['online'] = $data['online'];
+                    }
+                    if (isset($data['players']) && isset($data['players']['online'])) {
+                        $formatted_data['players_online'] = $data['players']['online'];
+                    }
+                    if (isset($data['players']) && isset($data['players']['max'])) {
+                        $formatted_data['players_max'] = $data['players']['max'];
+                    }
+                    if (isset($data['players']) && isset($data['players']['list']) && !empty($data['players']['list'])) {
+                        $player_list = $data['players']['list'];
+                        $players = explode(', ', $player_list);
+                        $formatted_data['player_list'] = $players;
+                    }
+                    if (isset($data['version'])) {
+                        $formatted_data['version'] = $data['version'];
+                    }
+                    if (isset($data['motd'])) {
+                        $motd_json = json_decode($data['motd'], true);
+                        if ($motd_json !== null) {
+                            $formatted_data['motd'] = $this->extractMOTDText($motd_json);
+                            $formatted_data['motd_html'] = $this->convertMOTDToHTML($motd_json);
+                        } else {
+                            $formatted_data['motd'] = $data['motd'];
+                            $formatted_data['motd_html'] = $this->convertMinecraftColorsToHTML($data['motd']);
+                        }
+                    }
+                    if (isset($data['favicon'])) {
+                        $formatted_data['server_icon'] = $data['favicon'];
+                    } else {
+                        $formatted_data['server_icon'] = $this->getCachedServerIcon($server_address);
+                    }
+                    $formatted_data['server_address'] = $server_address;
+                    if (isset($data['hostname'])) {
+                        $formatted_data['hostname'] = $data['hostname'];
+                    }
+                    if (isset($data['ip'])) {
+                        $formatted_data['ip_address'] = $data['ip'];
+                    }
+                    if (isset($data['online']) && !$data['online']) {
+                        if (!isset($formatted_data['motd'])) {
+                            $formatted_data['motd'] = '服务器当前离线';
+                            $formatted_data['motd_html'] = '服务器当前离线';
+                        }
+                    }
+
+                    // 存入缓存
+                    $cache_key = $cache_key_prefix . $server_address . ':' . 'java';
+                    $this->status_cache[$cache_key] = array(
+                        'data' => $formatted_data,
+                        'timestamp' => time()
+                    );
+
+                    $server_results[$server_address] = $formatted_data;
+                }
+            }
+
+            // 关闭cURL句柄
+            curl_multi_remove_handle($mh, $ch);
+            curl_close($ch);
+        }
+
+        // 关闭多线程批处理
+        curl_multi_close($mh);
+
+        return $server_results;
+    }
+
     // 主入口函数
     public function handleRequest() {
         if (!isset($_GET['action'])) {
@@ -689,6 +921,21 @@ class MinecraftAPI {
                     }
                 } else {
                     $this->sendErrorResponse('缺少服务器地址参数');
+                }
+                break;
+
+            case 'get_servers_status_parallel':
+                if (isset($_GET['servers'])) {
+                    $servers_json = $_GET['servers'];
+                    $servers = json_decode($servers_json, true);
+                    if (is_array($servers) && !empty($servers)) {
+                        $statuses = $this->getServersStatusInParallel($servers);
+                        $this->sendSuccessResponse($statuses);
+                    } else {
+                        $this->sendErrorResponse('无效的服务器列表参数');
+                    }
+                } else {
+                    $this->sendErrorResponse('缺少服务器列表参数');
                 }
                 break;
             

@@ -380,17 +380,38 @@ $minecraft_api = new MinecraftAPI();
 
         <?php if ($servers->num_rows > 0): ?>
             
+            <?php
+            // 收集所有服务器地址和类型，用于并行请求
+            $servers_list = [];
+            $servers_data = [];
+            
+            // 重置结果集指针
+            $servers->data_seek(0);
+            
+            while ($server = $servers->fetch_assoc()) {
+                $server_type = !empty($server['server_type']) ? $server['server_type'] : 'java';
+                $servers_list[] = [
+                    'address' => $server['address'],
+                    'type' => $server_type
+                ];
+                $servers_data[$server['address']] = $server;
+            }
+            
+            // 使用并行请求获取所有服务器状态
+            $all_statuses = $minecraft_api->getServersStatusInParallel($servers_list);
+            
+            // 重置结果集指针，准备渲染
+            $servers->data_seek(0);
+            ?>
+            
             <div class="server-grid">
                 <?php while ($server = $servers->fetch_assoc()): ?>
                     <?php
-                    // 调试：打印服务器数据中的server_type字段值
-                    $server_type_value = isset($server['server_type']) ? $server['server_type'] : '未设置';
-                    // 确保即使字段存在但为空，也使用java作为默认值
                     $server_type = !empty($server['server_type']) ? $server['server_type'] : 'java';
-                    // 调试：记录使用的服务器类型
-                    error_log('服务器名称: ' . $server['name'] . ', 数据库中的server_type值: ' . $server_type_value . ', 使用的类型: ' . $server_type);
-                    // 获取服务器状态，传递服务器类型
-                    $status = $minecraft_api->getServerStatus($server['address'], $server_type);
+                    $server_address = $server['address'];
+                    
+                    // 从并行请求结果中获取当前服务器的状态
+                    $status = isset($all_statuses[$server_address]) ? $all_statuses[$server_address] : ['online' => false];
                     
                     // 保存在线人数历史数据
                     // 只在服务器在线时保存数据
