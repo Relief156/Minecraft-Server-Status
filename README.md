@@ -160,6 +160,8 @@
 - 图表中可以显示在线玩家列表
 - 请求api并行，减少页面加载所需时间
 - 优化log的读取和存储逻辑
+### 自建api
+参考项目 https://github.com/Relief156/McMotd-API 其中有使用方法，将对应的api地址填写在配置文件中即可
 ## 鸣谢
 
 - **糖糕云**：提供服务器支持，[糖糕云官网](https://www.tanggaoyun.com/aff/BKKCXILW)
