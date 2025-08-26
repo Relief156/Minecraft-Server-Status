@@ -21,6 +21,13 @@ class Database {
             die(json_encode(array('success' => false, 'error' => '数据库连接失败: ' . $this->conn->connect_error)));
         }
     }
+
+    // 析构函数 - 关闭数据库连接
+    public function __destruct() {
+        if ($this->conn) {
+            $this->conn->close();
+        }
+    }
     
     // 获取服务器的所有历史数据 - 只保留在线人数变化的时间点
     public function getPlayerHistory($server_id) {
