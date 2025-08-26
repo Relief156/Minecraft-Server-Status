@@ -114,11 +114,29 @@ if (!$check_player_history || $check_player_history->num_rows == 0) {
         echo "已添加索引以提高查询性能\n";
         
         // 创建存储过程用于定期清理旧数据
-        $conn->multi_query("DELIMITER $$\nCREATE PROCEDURE IF NOT EXISTS cleanup_old_player_history()\nBEGIN\n    DELETE FROM player_history WHERE record_time < DATE_SUB(NOW(), INTERVAL 30 DAY);\nEND$$\nDELIMITER ;");
-        echo "已创建存储过程用于定期清理30天前的历史数据\n";
-    } else {
-        echo "创建玩家历史数据表失败: " . $conn->error . "\n";
-    }
+        // 先检查存储过程是否存在，如果存在则删除
+        $check_procedure = $conn->query("SHOW PROCEDURE STATUS WHERE name = 'cleanup_old_player_history'");
+        if ($check_procedure && $check_procedure->num_rows > 0) {
+            $conn->query("DROP PROCEDURE IF EXISTS cleanup_old_player_history");
+            echo "已删除旧的存储过程\n";
+        }
+        
+        // 创建新的存储过程
+        // 在PHP中不需要设置DELIMITER，直接创建存储过程
+        $create_procedure_sql = "CREATE PROCEDURE cleanup_old_player_history()
+BEGIN
+    DELETE FROM player_history WHERE record_time < DATE_SUB(NOW(), INTERVAL 30 DAY);
+END";
+        
+        // 执行创建存储过程的SQL语句
+        $conn->query($create_procedure_sql);
+        
+        // 检查是否有错误
+        if (!$conn->errno) {
+            echo "已创建存储过程用于定期清理30天前的历史数据\n";
+        } else {
+            echo "创建存储过程失败: " . $conn->error . "\n";
+        }
 }
 
 // 关闭连接

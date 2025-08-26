@@ -1,61 +1,137 @@
 <?php
-// 启用错误报告
+// 默认启用错误报告
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
+// 但对于AJAX请求，我们需要禁用错误显示，只在日志中记录
+if (isset($_POST['test_database'])) {
+    // 禁用错误显示，防止HTML错误信息破坏JSON响应
+    ini_set('display_errors', 0);
+    ini_set('display_startup_errors', 0);
+}
+
 // 安装设置页面
+
+// 获取全局日志数组的辅助函数
+function &get_global_logs() {
+    static $logs = array();
+    return $logs;
+}
 
 // 日志记录功能
 function log_message($message, $type = 'info') {
-    static $logs = array();
+    $logs = &get_global_logs();
     $timestamp = date('H:i:s');
     $logs[] = array(
-        'timestamp' => $timestamp,
+        'time' => $timestamp,  // 统一使用time键名
         'message' => $message,
         'type' => $type
     );
+    return $logs;  // 返回日志数组用于AJAX响应
+}
+
+// 获取所有日志
+function get_logs() {
+    $logs = &get_global_logs();
     return $logs;
 }
 
 // 清空日志
 function clear_logs() {
+    $logs = &get_global_logs();
+    $logs = array();
     log_message('日志已清空', 'info');
 }
 
 // 数据库测试功能
 if (isset($_POST['test_database'])) {
-    $db_host = $_POST['db_host'];
-    $db_user = $_POST['db_user'];
-    $db_pass = $_POST['db_pass'];
-    $db_name = $_POST['db_name'];
+    // 确保在设置头之前没有任何输出
+    ob_clean(); // 清除可能的输出缓冲区
     
-    $response = [];
-    $logs = [];
+    // 设置JSON内容类型
+    header('Content-Type: application/json');
+    
+    // 确保正确处理中文字符
+    header('Content-Type: application/json; charset=utf-8');
+    
+    // 初始化响应数组
+    $response = ['success' => false, 'message' => '', 'logs' => []];
+    
+    // 获取表单数据
+    $db_host = isset($_POST['db_host']) ? $_POST['db_host'] : '';
+    $db_user = isset($_POST['db_user']) ? $_POST['db_user'] : '';
+    $db_pass = isset($_POST['db_pass']) ? $_POST['db_pass'] : '';
+    $db_name = isset($_POST['db_name']) ? $_POST['db_name'] : '';
     
     // 开始记录日志
     log_message('开始数据库测试...', 'info');
     
     // 尝试连接数据库
-    $conn = new mysqli($db_host, $db_user, $db_pass);
+    // 设置连接超时（5秒）
+    $conn = new mysqli();
+    $conn->options(MYSQLI_OPT_CONNECT_TIMEOUT, 5);
     
-    if ($conn->connect_error) {
-        log_message('数据库连接失败: ' . $conn->connect_error, 'error');
+    log_message('尝试连接数据库: ' . $db_host . '，用户名: ' . $db_user, 'info');
+    if (!$conn->real_connect($db_host, $db_user, $db_pass)) {
+        $error = '数据库连接失败: ' . $conn->connect_error;
+        $error_code = $conn->connect_errno;
+        
+        // 根据错误代码提供更详细的解决方案建议
+        $suggestion = '';
+        switch($error_code) {
+            case 1045: // 访问被拒绝
+                $suggestion = ' 请检查用户名和密码是否正确，以及该用户是否有足够的权限。';
+                break;
+            case 1049: // 未知数据库
+                $suggestion = ' 请检查数据库名称是否正确。';
+                break;
+            case 2002: // 无法连接到服务器
+                $suggestion = ' 请检查主机名和端口是否正确，以及MySQL服务器是否正在运行。';
+                break;
+        }
+        
+        $error .= $suggestion;
+        log_message('数据库连接失败 (错误码: ' . $error_code . '): ' . $conn->connect_error . $suggestion, 'error');
         $response['success'] = false;
-        $response['message'] = '数据库连接失败: ' . $conn->connect_error;
+        $response['message'] = $error;
+        
+        // 关闭连接
+        $conn->close();
+        log_message('数据库连接已关闭', 'info');
     } else {
         log_message('数据库连接成功', 'success');
         
         // 创建数据库
         if (!$conn->query("CREATE DATABASE IF NOT EXISTS $db_name")) {
-            log_message('创建数据库失败: ' . $conn->error, 'error');
+            $error_msg = '创建数据库失败: ' . $conn->error;
+            $suggestion = ' 请查询数据库名称是否正确/用户是否有创建数据库的权限';
+            log_message($error_msg . $suggestion, 'error');
             $response['success'] = false;
-            $response['message'] = '创建数据库失败: ' . $conn->error;
+            $response['message'] = $error_msg . $suggestion;
+            
+            // 关闭连接
+            $conn->close();
+            log_message('数据库连接已关闭', 'info');
+            
+            // 直接跳转到返回响应的代码
+            goto end_response;
         } else {
             log_message('数据库 ' . $db_name . ' 创建/检查成功', 'success');
             
             // 选择数据库
-            $conn->select_db($db_name);
+            if (!$conn->select_db($db_name)) {
+                log_message('选择数据库失败: ' . $conn->error, 'error');
+                $response['success'] = false;
+                $response['message'] = '选择数据库失败: ' . $conn->error;
+                
+                // 关闭连接
+                $conn->close();
+                log_message('数据库连接已关闭', 'info');
+                
+                // 直接跳转到返回响应的代码
+                goto end_response;
+            }
             log_message('已选择数据库: ' . $db_name, 'info');
             
             // 检查并创建服务器表
@@ -73,6 +149,13 @@ if (isset($_POST['test_database'])) {
                 log_message('创建servers表失败: ' . $conn->error, 'error');
                 $response['success'] = false;
                 $response['message'] = '创建servers表失败: ' . $conn->error;
+                
+                // 关闭连接
+                $conn->close();
+                log_message('数据库连接已关闭', 'info');
+                
+                // 直接跳转到返回响应的代码
+                goto end_response;
             } else {
                 log_message('servers表创建/检查成功', 'success');
                 
@@ -88,6 +171,10 @@ if (isset($_POST['test_database'])) {
                     log_message('创建admins表失败: ' . $conn->error, 'error');
                     $response['success'] = false;
                     $response['message'] = '创建admins表失败: ' . $conn->error;
+                    
+                    // 关闭连接
+                    $conn->close();
+                    log_message('数据库连接已关闭', 'info');
                 } else {
                     log_message('admins表创建/检查成功', 'success');
                     
@@ -105,6 +192,10 @@ if (isset($_POST['test_database'])) {
                         log_message('创建player_history表失败: ' . $conn->error, 'error');
                         $response['success'] = false;
                         $response['message'] = '创建player_history表失败: ' . $conn->error;
+                        
+                        // 关闭连接
+                        $conn->close();
+                        log_message('数据库连接已关闭', 'info');
                     } else {
                         log_message('player_history表创建/检查成功', 'success');
                         
@@ -134,14 +225,26 @@ if (isset($_POST['test_database'])) {
                         }
                         
                         // 创建存储过程用于定期清理旧数据
-                        // 临时设置SQL模式以避免分隔符问题
-                        $conn->query("SET sql_mode='NO_BACKSLASH_ESCAPES'");
-                        $procedure_sql = "CREATE PROCEDURE IF NOT EXISTS cleanup_old_player_history()
-                        BEGIN
-                            DELETE FROM player_history WHERE record_time < DATE_SUB(NOW(), INTERVAL 30 DAY);
-                        END";
-                        $conn->query($procedure_sql);
-                        log_message('创建cleanup_old_player_history存储过程成功', 'success');
+                        // 使用兼容更多MySQL版本的方式创建存储过程
+                        // 先检查存储过程是否存在，如果存在则删除
+                        $check_procedure = $conn->query("SHOW PROCEDURE STATUS WHERE name = 'cleanup_old_player_history'");
+                        if ($check_procedure && $check_procedure->num_rows > 0) {
+                            $conn->query("DROP PROCEDURE IF EXISTS cleanup_old_player_history");
+                            log_message('已删除旧的cleanup_old_player_history存储过程', 'info');
+                        }
+                        
+                        // 创建新的存储过程
+                        // 在PHP中不需要设置DELIMITER，直接创建存储过程
+                        $create_procedure_sql = "CREATE PROCEDURE cleanup_old_player_history()
+BEGIN
+    DELETE FROM player_history WHERE record_time < DATE_SUB(NOW(), INTERVAL 30 DAY);
+END";
+                        
+                        if ($conn->query($create_procedure_sql)) {
+                            log_message('创建cleanup_old_player_history存储过程成功', 'success');
+                        } else {
+                            log_message('创建cleanup_old_player_history存储过程失败: ' . $conn->error, 'error');
+                        }
                         
                         $response['success'] = true;
                         $response['message'] = '数据库测试成功！所有必要的表已准备就绪。';
@@ -156,13 +259,23 @@ if (isset($_POST['test_database'])) {
         log_message('数据库连接已关闭', 'info');
     }
     
+    end_response: // 响应结束标签
+    
+    // 记录测试结束日志
+    log_message('测试结束', 'info');
+    
     // 获取所有日志
-    $logs = log_message('测试结束', 'info');
-    $response['logs'] = $logs;
+    $response['logs'] = get_logs();
     
     // 返回JSON响应
-    header('Content-Type: application/json');
-    echo json_encode($response);
+    // 确保响应不包含任何UTF-8 BOM
+    ob_end_clean(); // 清除所有输出缓冲区
+    
+    // 设置JSON内容类型（只需设置一次）
+    header('Content-Type: application/json; charset=utf-8');
+    
+    // 确保中文正常显示
+    echo json_encode($response, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -204,19 +317,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         log_message('表单验证成功', 'success');
         
         // 尝试连接数据库
-        $conn = new mysqli($db_host, $db_user, $db_pass);
+        // 设置连接超时（5秒）
+        $conn = new mysqli();
+        $conn->options(MYSQLI_OPT_CONNECT_TIMEOUT, 5);
         
-        if ($conn->connect_error) {
+        log_message('尝试连接数据库: ' . $db_host . '，用户名: ' . $db_user, 'info');
+        if (!$conn->real_connect($db_host, $db_user, $db_pass)) {
             $error = '数据库连接失败: ' . $conn->connect_error;
-            log_message('数据库连接失败: ' . $conn->connect_error, 'error');
+            $error_code = $conn->connect_errno;
+            
+            // 根据错误代码提供更详细的解决方案建议
+            $suggestion = '';
+            switch($error_code) {
+                case 1045: // 访问被拒绝
+                    $suggestion = ' 请检查用户名和密码是否正确，以及该用户是否有足够的权限。';
+                    break;
+                case 1049: // 未知数据库
+                    $suggestion = ' 请检查数据库名称是否正确。';
+                    break;
+                case 2002: // 无法连接到服务器
+                    $suggestion = ' 请检查主机名和端口是否正确，以及MySQL服务器是否正在运行。';
+                    break;
+            }
+            
+            $error .= $suggestion;
+            log_message('数据库连接失败 (错误码: ' . $error_code . '): ' . $conn->connect_error . $suggestion, 'error');
+            
+            // 关闭连接
+            $conn->close();
+            log_message('数据库连接已关闭', 'info');
         } else {
             log_message('数据库连接成功', 'success');
             
             // 创建数据库
-            if (!$conn->query("CREATE DATABASE IF NOT EXISTS $db_name")) {
-                $error = '创建数据库失败: ' . $conn->error;
-                log_message('创建数据库失败: ' . $conn->error, 'error');
-            } else {
+                if (!$conn->query("CREATE DATABASE IF NOT EXISTS $db_name")) {
+                    $error = '创建数据库失败: ' . $conn->error;
+                    log_message('创建数据库失败: ' . $conn->error, 'error');
+                    
+                    // 关闭连接
+                    $conn->close();
+                    log_message('数据库连接已关闭', 'info');
+                } else {
                 log_message('数据库 ' . $db_name . ' 创建/检查成功', 'success');
                 
                 // 选择数据库
@@ -224,20 +365,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 log_message('已选择数据库: ' . $db_name, 'info');
                 
                 // 创建服务器表
-                $sql = "CREATE TABLE IF NOT EXISTS servers (
-                    id INT(11) AUTO_INCREMENT PRIMARY KEY,
-                    name VARCHAR(255) NOT NULL,
-                    address VARCHAR(255) NOT NULL,
-                    server_type ENUM('java', 'bedrock') DEFAULT 'java',
-                    sort_weight INT NOT NULL DEFAULT 1000,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-                )";
-                
-                if (!$conn->query($sql)) {
-                    $error = '创建servers表失败: ' . $conn->error;
-                    log_message('创建servers表失败: ' . $conn->error, 'error');
-                } else {
+                    $sql = "CREATE TABLE IF NOT EXISTS servers (
+                        id INT(11) AUTO_INCREMENT PRIMARY KEY,
+                        name VARCHAR(255) NOT NULL,
+                        address VARCHAR(255) NOT NULL,
+                        server_type ENUM('java', 'bedrock') DEFAULT 'java',
+                        sort_weight INT NOT NULL DEFAULT 1000,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                    )";
+                    
+                    if (!$conn->query($sql)) {
+                        $error = '创建servers表失败: ' . $conn->error;
+                        log_message('创建servers表失败: ' . $conn->error, 'error');
+                        
+                        // 关闭连接
+                        $conn->close();
+                        log_message('数据库连接已关闭', 'info');
+                    } else {
                     log_message('servers表创建成功', 'success');
                     
                     // 创建管理员表
@@ -251,6 +396,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if (!$conn->query($sql)) {
                         $error = '创建admins表失败: ' . $conn->error;
                         log_message('创建admins表失败: ' . $conn->error, 'error');
+                        
+                        // 关闭连接
+                        $conn->close();
+                        log_message('数据库连接已关闭', 'info');
                     } else {
                         log_message('admins表创建成功', 'success');
                         
@@ -261,6 +410,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if (!$conn->query($sql)) {
                             $error = '创建/更新管理员账户失败: ' . $conn->error;
                             log_message('创建/更新管理员账户失败: ' . $conn->error, 'error');
+                            
+                            // 关闭连接
+                            $conn->close();
+                            log_message('数据库连接已关闭', 'info');
                         } else {
                             $success = '管理员账户已' . ($conn->affected_rows == 1 ? '创建' : '更新') . '成功！';
                             log_message('管理员账户 ' . $admin_user . ' 创建/更新成功', 'success');
@@ -278,6 +431,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             if (!$conn->query($sql)) {
                                 $error = '创建player_history表失败: ' . $conn->error;
                                 log_message('创建player_history表失败: ' . $conn->error, 'error');
+                                
+                                // 关闭连接
+                                $conn->close();
+                                log_message('数据库连接已关闭', 'info');
                             } else {
                                 log_message('player_history表创建成功', 'success');
                                 
@@ -307,14 +464,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 }
                                 
                                 // 创建存储过程用于定期清理旧数据
-                                // 临时设置SQL模式以避免分隔符问题
-                                $conn->query("SET sql_mode='NO_BACKSLASH_ESCAPES'");
-                                $procedure_sql = "CREATE PROCEDURE IF NOT EXISTS cleanup_old_player_history()
-                                BEGIN
-                                    DELETE FROM player_history WHERE record_time < DATE_SUB(NOW(), INTERVAL 30 DAY);
-                                END";
-                                $conn->query($procedure_sql);
-                                log_message('创建cleanup_old_player_history存储过程成功', 'success');
+                                // 使用兼容更多MySQL版本的方式创建存储过程
+                                // 先检查存储过程是否存在，如果存在则删除
+                                $check_procedure = $conn->query("SHOW PROCEDURE STATUS WHERE name = 'cleanup_old_player_history'");
+                                if ($check_procedure && $check_procedure->num_rows > 0) {
+                                    $conn->query("DROP PROCEDURE IF EXISTS cleanup_old_player_history");
+                                    log_message('已删除旧的cleanup_old_player_history存储过程', 'info');
+                                }
+                                
+                                // 创建新的存储过程
+                                // 在PHP中不需要设置DELIMITER，直接创建存储过程
+                                $create_procedure_sql = "CREATE PROCEDURE cleanup_old_player_history()
+BEGIN
+    DELETE FROM player_history WHERE record_time < DATE_SUB(NOW(), INTERVAL 30 DAY);
+END";
+                                
+                                if ($conn->query($create_procedure_sql)) {
+                                    log_message('创建cleanup_old_player_history存储过程成功', 'success');
+                                } else {
+                                    log_message('创建cleanup_old_player_history存储过程失败: ' . $conn->error, 'error');
+                                }
                                 
                                 // 更新配置文件
                                 $config_content = "<?php\n";
@@ -335,6 +504,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 if (!file_put_contents('config.php', $config_content)) {
                                     $error = '更新配置文件失败，请确保文件有写入权限';
                                     log_message('更新配置文件失败，请确保文件有写入权限', 'error');
+                                    
+                                    // 关闭连接
+                                    $conn->close();
+                                    log_message('数据库连接已关闭', 'info');
                                 } else {
                                     log_message('配置文件创建成功', 'success');
                                     
@@ -381,35 +554,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     
                                     ?>
                                     EOD;
-                                    file_put_contents('api_loader.php', $api_loader_content);
-                                    log_message('api_loader.php文件创建成功', 'success');
-                                    
-                                    // 创建api.json文件
-                                    $default_api_data = [
-                                        'routes' => [
-                                            [
-                                                'type' => 'java',
-                                                'api_url' => 'http://cow.mc6.cn:10709/raw/',
-                                                'name' => '默认Java API'
-                                            ],
-                                            [
-                                                'type' => 'bedrock',
-                                                'api_url' => 'https://api.mcsrvstat.us/bedrock/3/',
-                                                'name' => '默认Bedrock API'
+                                    if (!file_put_contents('api_loader.php', $api_loader_content)) {
+                                        $error = '创建api_loader.php文件失败，请确保文件有写入权限';
+                                        log_message('创建api_loader.php文件失败，请确保文件有写入权限', 'error');
+                                        
+                                        // 关闭连接
+                                        $conn->close();
+                                        log_message('数据库连接已关闭', 'info');
+                                    } else {
+                                        log_message('api_loader.php文件创建成功', 'success');
+                                        
+                                        // 创建api.json文件
+                                        $default_api_data = [
+                                            'routes' => [
+                                                [
+                                                    'type' => 'java',
+                                                    'api_url' => 'http://cow.mc6.cn:10709/raw/',
+                                                    'name' => '默认Java API'
+                                                ],
+                                                [
+                                                    'type' => 'bedrock',
+                                                    'api_url' => 'https://api.mcsrvstat.us/bedrock/3/',
+                                                    'name' => '默认Bedrock API'
+                                                ]
                                             ]
-                                        ]
-                                    ];
-                                    file_put_contents('api.json', json_encode($default_api_data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-                                    log_message('api.json文件创建成功', 'success');
+                                        ];
+                                        if (!file_put_contents('api.json', json_encode($default_api_data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE))) {
+                                            $error = '创建api.json文件失败，请确保文件有写入权限';
+                                            log_message('创建api.json文件失败，请确保文件有写入权限', 'error');
+                                             
+                                            // 关闭连接
+                                            $conn->close();
+                                            log_message('数据库连接已关闭', 'info');
+                                        } else {
+                                            log_message('api.json文件创建成功', 'success');
 
-                                    // 创建已安装标记文件
-                                    file_put_contents('installed.lock', 'Installed on ' . date('Y-m-d H:i:s'));
-                                    log_message('创建installed.lock文件，标记安装完成', 'success');
+                                            // 创建已安装标记文件
+                                            if (!file_put_contents('installed.lock', 'Installed on ' . date('Y-m-d H:i:s'))) {
+                                                $error = '创建installed.lock文件失败，请确保文件有写入权限';
+                                                log_message('创建installed.lock文件失败，请确保文件有写入权限', 'error');
+                                                
+                                                // 关闭连接
+                                                $conn->close();
+                                                log_message('数据库连接已关闭', 'info');
+                                            } else {
+                                                log_message('创建installed.lock文件，标记安装完成', 'success');
 
-                                    $success = '安装成功！即将跳转到监控页面...';
-                                    log_message('安装成功！3秒后重定向到首页', 'success');
-                                    header('Refresh: 3; URL=index.php');
-                                    exit;
+                                                $success = '安装成功！即将跳转到监控页面...';
+                                                log_message('安装成功！3秒后重定向到首页', 'success');
+                                                header('Refresh: 3; URL=index.php');
+                                                exit;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
