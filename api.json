@@ -1,7 +1,7 @@
 {
   "routes": [
     {
-      "name": "糖糕云赞助",
+      "name": "糖糕云赞助1",
       "type": "java",
       "api_url": "http://cow.mc6.cn:10709/raw/",
       "website": "https://www.tanggaoyun.com/aff/BKKCXILW"
