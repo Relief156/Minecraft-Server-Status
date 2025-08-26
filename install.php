@@ -108,12 +108,30 @@ if (isset($_POST['test_database'])) {
                     } else {
                         log_message('player_history表创建/检查成功', 'success');
                         
-                        // 添加索引以提高查询性能
-                        $conn->query("CREATE INDEX IF NOT EXISTS idx_server_id ON player_history(server_id)");
-                        log_message('添加idx_server_id索引成功', 'success');
+                        // 添加索引以提高查询性能（兼容所有MySQL版本）
+                        // 检查并创建idx_server_id索引
+                        $result = $conn->query("SHOW INDEX FROM player_history WHERE Key_name = 'idx_server_id'");
+                        if ($result->num_rows == 0) {
+                            if ($conn->query("CREATE INDEX idx_server_id ON player_history(server_id)")) {
+                                log_message('添加idx_server_id索引成功', 'success');
+                            } else {
+                                log_message('添加idx_server_id索引失败: ' . $conn->error, 'error');
+                            }
+                        } else {
+                            log_message('idx_server_id索引已存在，跳过创建', 'info');
+                        }
                         
-                        $conn->query("CREATE INDEX IF NOT EXISTS idx_record_time ON player_history(record_time)");
-                        log_message('添加idx_record_time索引成功', 'success');
+                        // 检查并创建idx_record_time索引
+                        $result = $conn->query("SHOW INDEX FROM player_history WHERE Key_name = 'idx_record_time'");
+                        if ($result->num_rows == 0) {
+                            if ($conn->query("CREATE INDEX idx_record_time ON player_history(record_time)")) {
+                                log_message('添加idx_record_time索引成功', 'success');
+                            } else {
+                                log_message('添加idx_record_time索引失败: ' . $conn->error, 'error');
+                            }
+                        } else {
+                            log_message('idx_record_time索引已存在，跳过创建', 'info');
+                        }
                         
                         // 创建存储过程用于定期清理旧数据
                         // 临时设置SQL模式以避免分隔符问题
@@ -263,12 +281,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             } else {
                                 log_message('player_history表创建成功', 'success');
                                 
-                                // 添加索引以提高查询性能
-                                $conn->query("CREATE INDEX IF NOT EXISTS idx_server_id ON player_history(server_id)");
-                                log_message('添加idx_server_id索引成功', 'success');
+                                // 添加索引以提高查询性能（兼容所有MySQL版本）
+                                // 检查并创建idx_server_id索引
+                                $result = $conn->query("SHOW INDEX FROM player_history WHERE Key_name = 'idx_server_id'");
+                                if ($result->num_rows == 0) {
+                                    if ($conn->query("CREATE INDEX idx_server_id ON player_history(server_id)")) {
+                                        log_message('添加idx_server_id索引成功', 'success');
+                                    } else {
+                                        log_message('添加idx_server_id索引失败: ' . $conn->error, 'error');
+                                    }
+                                } else {
+                                    log_message('idx_server_id索引已存在，跳过创建', 'info');
+                                }
                                 
-                                $conn->query("CREATE INDEX IF NOT EXISTS idx_record_time ON player_history(record_time)");
-                                log_message('添加idx_record_time索引成功', 'success');
+                                // 检查并创建idx_record_time索引
+                                $result = $conn->query("SHOW INDEX FROM player_history WHERE Key_name = 'idx_record_time'");
+                                if ($result->num_rows == 0) {
+                                    if ($conn->query("CREATE INDEX idx_record_time ON player_history(record_time)")) {
+                                        log_message('添加idx_record_time索引成功', 'success');
+                                    } else {
+                                        log_message('添加idx_record_time索引失败: ' . $conn->error, 'error');
+                                    }
+                                } else {
+                                    log_message('idx_record_time索引已存在，跳过创建', 'info');
+                                }
                                 
                                 // 创建存储过程用于定期清理旧数据
                                 // 临时设置SQL模式以避免分隔符问题
