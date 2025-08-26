@@ -325,7 +325,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'edit' && isset($_GET['id'])) 
             <h1>服务器管理</h1>
             <div style="display: flex; gap: 10px;">
                 <a href="index.php" class="logout-btn">回到主页</a>
-                <a href="view_logs.php" class="logout-btn">查看日志</a>
+                  <a href="view_logs.php" class="logout-btn">查看日志</a>
+                  <a href="api_management.php" class="logout-btn">API管理</a>
+                  <!-- 获取API最新信息功能已整合到API管理页面 -->
                 <a href="logout.php" class="logout-btn">退出登录</a>
             </div>
         </div>

@@ -20,7 +20,7 @@ require_once 'db.php';
 
 class MinecraftAPI {
     private $java_api_urls; // Java版API URL列表（支持多个URL按优先级顺序）
-    private $bedrock_api_url;
+    private $bedrock_api_urls; // Bedrock版API URL列表（支持多个URL按优先级顺序）
     private $log_file = 'api.log';
     private $icon_cache_dir = 'cache/icons';
     private $icon_cache_ttl = 3600; // 缓存过期时间，单位秒（1小时）
@@ -35,10 +35,48 @@ class MinecraftAPI {
     public function __construct() {
         // 初始化API URL（从配置文件读取）
         $this->java_api_urls = JAVA_API_URLS; // Java版API URL列表
-        $this->bedrock_api_url = BEDROCK_API_URL; // Bedrock版API URL
+        $this->bedrock_api_urls = BEDROCK_API_URLS; // Bedrock版API URL列表
+        
+        // 加载已选择的API
+        $this->loadSelectedApi();
         
         // 初始化数据库连接
         $this->db = new Database();
+    }
+
+    // 加载已选择的API
+    private function loadSelectedApi() {
+        $selection_file = 'api_selection.json';
+        if (file_exists($selection_file)) {
+            $selected_apis = json_decode(file_get_contents($selection_file), true);
+            if ($selected_apis) {
+                // 为Java版设置选择的API
+                if (isset($selected_apis['selected_java_api'])) {
+                    // 确保选择的API存在于可用API列表中
+                    if (in_array($selected_apis['selected_java_api'], $this->java_api_urls)) {
+                        // 将选择的API移到列表首位
+                        $key = array_search($selected_apis['selected_java_api'], $this->java_api_urls);
+                        if ($key !== false) {
+                            unset($this->java_api_urls[$key]);
+                            array_unshift($this->java_api_urls, $selected_apis['selected_java_api']);
+                        }
+                    }
+                }
+                
+                // 为Bedrock版设置选择的API
+                if (isset($selected_apis['selected_bedrock_api'])) {
+                    // 确保选择的API存在于可用API列表中
+                    if (in_array($selected_apis['selected_bedrock_api'], $this->bedrock_api_urls)) {
+                        // 将选择的API移到列表首位
+                        $key = array_search($selected_apis['selected_bedrock_api'], $this->bedrock_api_urls);
+                        if ($key !== false) {
+                            unset($this->bedrock_api_urls[$key]);
+                            array_unshift($this->bedrock_api_urls, $selected_apis['selected_bedrock_api']);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // 日志记录方法
@@ -165,11 +203,18 @@ class MinecraftAPI {
         $this->last_request_times[$cache_key] = $current_time;
         
         // 尝试使用主API和备用API的故障转移逻辑
-        // 首先尝试主API，如果主API失败才尝试备用API
+        // 首先尝试首选API，如果失败则尝试其他可用API
         $api_urls = array();
         
+        // 根据服务器类型选择API列表
+        if ($server_type === 'java') {
+            $api_list = $this->java_api_urls;
+        } else {
+            $api_list = $this->bedrock_api_urls;
+        }
+        
         // 根据API配置构建优先顺序的URL数组
-        foreach ($this->java_api_urls as $index => $api_url) {
+        foreach ($api_list as $index => $api_url) {
             $api_urls['api_' . ($index + 1)] = $api_url;
         }
         
@@ -185,7 +230,7 @@ class MinecraftAPI {
                 break;
             }
             
-            $this->log('尝试使用' . ($api_name == 'primary' ? '主' : '备用') . 'API: ' . $api_url);
+            $this->log('尝试使用API (' . $api_name . '): ' . $api_url);
             // 构建API请求URL
             $url = $api_url . urlencode($server_address);
             $this->log('请求URL: ' . $url);
@@ -759,13 +804,6 @@ class MinecraftAPI {
         $curl_handles = array();
         $server_results = array();
 
-        // 初始化API URL（从配置文件读取）
-        $api_urls = array();
-        foreach ($this->java_api_urls as $index => $api_url) {
-            $api_urls['api_' . ($index + 1)] = $api_url;
-        }
-        $primary_api_url = reset($api_urls);
-
         // 为每个服务器创建cURL句柄
         foreach ($servers as $server) {
             $server_address = $server['address'];
@@ -780,6 +818,20 @@ class MinecraftAPI {
                 $server_results[$server_address] = $this->status_cache[$cache_key]['data'];
                 continue;
             }
+
+            // 根据服务器类型选择API列表
+            if ($server_type === 'java') {
+                $api_list = $this->java_api_urls;
+            } else {
+                $api_list = $this->bedrock_api_urls;
+            }
+
+            // 初始化API URL
+            $api_urls = array();
+            foreach ($api_list as $index => $api_url) {
+                $api_urls['api_' . ($index + 1)] = $api_url;
+            }
+            $primary_api_url = reset($api_urls);
 
             // 构建API请求URL
             $url = $primary_api_url . urlencode($server_address);
@@ -829,40 +881,71 @@ class MinecraftAPI {
                     $this->log($error_message);
                     $server_results[$server_address] = ['error' => $error_message];
                 } else {
-                    // 转换API响应格式
+                    // 根据服务器类型转换API响应格式
                     $formatted_data = [];
                     if (isset($data['online'])) {
                         $formatted_data['online'] = $data['online'];
                     }
-                    if (isset($data['players']) && isset($data['players']['online'])) {
-                        $formatted_data['players_online'] = $data['players']['online'];
+                    
+                    // 处理玩家信息
+                    if (isset($data['players'])) {
+                        if (isset($data['players']['online'])) {
+                            $formatted_data['players_online'] = $data['players']['online'];
+                        }
+                        if (isset($data['players']['max'])) {
+                            $formatted_data['players_max'] = $data['players']['max'];
+                        }
+                        if (isset($data['players']['list']) && !empty($data['players']['list'])) {
+                            $player_list = $data['players']['list'];
+                            $players = is_array($player_list) ? $player_list : explode(', ', $player_list);
+                            $formatted_data['player_list'] = $players;
+                        }
                     }
-                    if (isset($data['players']) && isset($data['players']['max'])) {
-                        $formatted_data['players_max'] = $data['players']['max'];
-                    }
-                    if (isset($data['players']) && isset($data['players']['list']) && !empty($data['players']['list'])) {
-                        $player_list = $data['players']['list'];
-                        $players = explode(', ', $player_list);
-                        $formatted_data['player_list'] = $players;
-                    }
+                    
+                    // 处理版本信息
                     if (isset($data['version'])) {
                         $formatted_data['version'] = $data['version'];
                     }
+                    // 基岩版特有: 协议版本信息
+                    if ($server_type === 'bedrock' && isset($data['protocol']) && isset($data['protocol']['name'])) {
+                        $formatted_data['protocol_version'] = $data['protocol']['name'];
+                    }
+                    
+                    // 处理MOTD
                     if (isset($data['motd'])) {
-                        $motd_json = json_decode($data['motd'], true);
-                        if ($motd_json !== null) {
-                            $formatted_data['motd'] = $this->extractMOTDText($motd_json);
-                            $formatted_data['motd_html'] = $this->convertMOTDToHTML($motd_json);
+                        // 基岩版的motd通常是数组格式
+                        if ($server_type === 'bedrock' && is_array($data['motd'])) {
+                            if (isset($data['motd']['clean'])) {
+                                $formatted_data['motd'] = $data['motd']['clean'];
+                            } elseif (isset($data['motd']['raw'])) {
+                                $formatted_data['motd'] = $data['motd']['raw'];
+                            }
+                            if (isset($data['motd']['html'])) {
+                                $formatted_data['motd_html'] = $data['motd']['html'];
+                            } else {
+                                $formatted_data['motd_html'] = $this->convertMinecraftColorsToHTML(implode('', $data['motd']));
+                            }
                         } else {
-                            $formatted_data['motd'] = $data['motd'];
-                            $formatted_data['motd_html'] = $this->convertMinecraftColorsToHTML($data['motd']);
+                            // Java版处理逻辑
+                            $motd_json = json_decode($data['motd'], true);
+                            if ($motd_json !== null) {
+                                $formatted_data['motd'] = $this->extractMOTDText($motd_json);
+                                $formatted_data['motd_html'] = $this->convertMOTDToHTML($motd_json);
+                            } else {
+                                $formatted_data['motd'] = $data['motd'];
+                                $formatted_data['motd_html'] = $this->convertMinecraftColorsToHTML($data['motd']);
+                            }
                         }
                     }
+                    
+                    // 处理服务器图标
                     if (isset($data['favicon'])) {
                         $formatted_data['server_icon'] = $data['favicon'];
                     } else {
                         $formatted_data['server_icon'] = $this->getCachedServerIcon($server_address);
                     }
+                    
+                    // 基本信息
                     $formatted_data['server_address'] = $server_address;
                     if (isset($data['hostname'])) {
                         $formatted_data['hostname'] = $data['hostname'];
@@ -870,6 +953,18 @@ class MinecraftAPI {
                     if (isset($data['ip'])) {
                         $formatted_data['ip_address'] = $data['ip'];
                     }
+                    
+                    // 基岩版特有: 地图和游戏模式
+                    if ($server_type === 'bedrock') {
+                        if (isset($data['map']) && isset($data['map']['clean'])) {
+                            $formatted_data['map'] = $data['map']['clean'];
+                        }
+                        if (isset($data['gamemode'])) {
+                            $formatted_data['gamemode'] = $data['gamemode'];
+                        }
+                    }
+                    
+                    // 离线服务器处理
                     if (isset($data['online']) && !$data['online']) {
                         if (!isset($formatted_data['motd'])) {
                             $formatted_data['motd'] = '服务器当前离线';
@@ -877,14 +972,14 @@ class MinecraftAPI {
                         }
                     }
 
-                    // 存入缓存
-                    $cache_key = $cache_key_prefix . $server_address . ':' . 'java';
-                    $this->status_cache[$cache_key] = array(
-                        'data' => $formatted_data,
-                        'timestamp' => time()
-                    );
+                    // 根据服务器类型确定缓存键
+            $cache_key = $cache_key_prefix . $server_address . ':' . $server_type;
+            $this->status_cache[$cache_key] = array(
+                'data' => $formatted_data,
+                'timestamp' => time()
+            );
 
-                    $server_results[$server_address] = $formatted_data;
+            $server_results[$server_address] = $formatted_data;
                 }
             }
 

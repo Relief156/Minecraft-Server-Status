@@ -6,6 +6,148 @@ error_reporting(E_ALL);
 
 // 安装设置页面
 
+// 日志记录功能
+function log_message($message, $type = 'info') {
+    static $logs = array();
+    $timestamp = date('H:i:s');
+    $logs[] = array(
+        'timestamp' => $timestamp,
+        'message' => $message,
+        'type' => $type
+    );
+    return $logs;
+}
+
+// 清空日志
+function clear_logs() {
+    log_message('日志已清空', 'info');
+}
+
+// 数据库测试功能
+if (isset($_POST['test_database'])) {
+    $db_host = $_POST['db_host'];
+    $db_user = $_POST['db_user'];
+    $db_pass = $_POST['db_pass'];
+    $db_name = $_POST['db_name'];
+    
+    $response = [];
+    $logs = [];
+    
+    // 开始记录日志
+    log_message('开始数据库测试...', 'info');
+    
+    // 尝试连接数据库
+    $conn = new mysqli($db_host, $db_user, $db_pass);
+    
+    if ($conn->connect_error) {
+        log_message('数据库连接失败: ' . $conn->connect_error, 'error');
+        $response['success'] = false;
+        $response['message'] = '数据库连接失败: ' . $conn->connect_error;
+    } else {
+        log_message('数据库连接成功', 'success');
+        
+        // 创建数据库
+        if (!$conn->query("CREATE DATABASE IF NOT EXISTS $db_name")) {
+            log_message('创建数据库失败: ' . $conn->error, 'error');
+            $response['success'] = false;
+            $response['message'] = '创建数据库失败: ' . $conn->error;
+        } else {
+            log_message('数据库 ' . $db_name . ' 创建/检查成功', 'success');
+            
+            // 选择数据库
+            $conn->select_db($db_name);
+            log_message('已选择数据库: ' . $db_name, 'info');
+            
+            // 检查并创建服务器表
+            $sql = "CREATE TABLE IF NOT EXISTS servers (
+                id INT(11) AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                address VARCHAR(255) NOT NULL,
+                server_type ENUM('java', 'bedrock') DEFAULT 'java',
+                sort_weight INT NOT NULL DEFAULT 1000,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )";
+            
+            if (!$conn->query($sql)) {
+                log_message('创建servers表失败: ' . $conn->error, 'error');
+                $response['success'] = false;
+                $response['message'] = '创建servers表失败: ' . $conn->error;
+            } else {
+                log_message('servers表创建/检查成功', 'success');
+                
+                // 检查并创建管理员表
+                $sql = "CREATE TABLE IF NOT EXISTS admins (
+                    id INT(11) AUTO_INCREMENT PRIMARY KEY,
+                    username VARCHAR(50) NOT NULL UNIQUE,
+                    password VARCHAR(255) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )";
+                
+                if (!$conn->query($sql)) {
+                    log_message('创建admins表失败: ' . $conn->error, 'error');
+                    $response['success'] = false;
+                    $response['message'] = '创建admins表失败: ' . $conn->error;
+                } else {
+                    log_message('admins表创建/检查成功', 'success');
+                    
+                    // 检查并创建玩家历史数据表
+                    $sql = "CREATE TABLE IF NOT EXISTS player_history (
+                        id INT(11) AUTO_INCREMENT PRIMARY KEY,
+                        server_id INT(11) NOT NULL,
+                        players_online INT NOT NULL,
+                        player_list_json TEXT DEFAULT NULL,
+                        record_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
+                    )";
+                    
+                    if (!$conn->query($sql)) {
+                        log_message('创建player_history表失败: ' . $conn->error, 'error');
+                        $response['success'] = false;
+                        $response['message'] = '创建player_history表失败: ' . $conn->error;
+                    } else {
+                        log_message('player_history表创建/检查成功', 'success');
+                        
+                        // 添加索引以提高查询性能
+                        $conn->query("CREATE INDEX IF NOT EXISTS idx_server_id ON player_history(server_id)");
+                        log_message('添加idx_server_id索引成功', 'success');
+                        
+                        $conn->query("CREATE INDEX IF NOT EXISTS idx_record_time ON player_history(record_time)");
+                        log_message('添加idx_record_time索引成功', 'success');
+                        
+                        // 创建存储过程用于定期清理旧数据
+                        // 临时设置SQL模式以避免分隔符问题
+                        $conn->query("SET sql_mode='NO_BACKSLASH_ESCAPES'");
+                        $procedure_sql = "CREATE PROCEDURE IF NOT EXISTS cleanup_old_player_history()
+                        BEGIN
+                            DELETE FROM player_history WHERE record_time < DATE_SUB(NOW(), INTERVAL 30 DAY);
+                        END";
+                        $conn->query($procedure_sql);
+                        log_message('创建cleanup_old_player_history存储过程成功', 'success');
+                        
+                        $response['success'] = true;
+                        $response['message'] = '数据库测试成功！所有必要的表已准备就绪。';
+                        log_message('数据库测试完成，所有必要的表已准备就绪', 'success');
+                    }
+                }
+            }
+        }
+        
+        // 关闭连接
+        $conn->close();
+        log_message('数据库连接已关闭', 'info');
+    }
+    
+    // 获取所有日志
+    $logs = log_message('测试结束', 'info');
+    $response['logs'] = $logs;
+    
+    // 返回JSON响应
+    header('Content-Type: application/json');
+    echo json_encode($response);
+    exit;
+}
+
 // 如果已经安装，则重定向到首页
 if (file_exists('installed.lock')) {
     header('Location: index.php');
@@ -14,8 +156,13 @@ if (file_exists('installed.lock')) {
 
 $error = '';
 $success = '';
+$logs = array(); // 存储安装过程的日志
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // 清空旧日志
+    clear_logs();
+    log_message('开始安装流程...', 'info');
+    
     // 获取表单数据
     $db_host = $_POST['db_host'];
     $db_user = $_POST['db_user'];
@@ -25,25 +172,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $admin_pass = $_POST['admin_pass'];
     $admin_pass_confirm = $_POST['admin_pass_confirm'];
     $site_title = $_POST['site_title'];
+    
+    log_message('表单数据已获取', 'info');
 
     // 验证表单数据
     if (empty($db_host) || empty($db_user) || empty($db_name) || empty($admin_user) || empty($admin_pass)) {
         $error = '所有必填字段都必须填写';
+        log_message('表单验证失败：所有必填字段都必须填写', 'error');
     } elseif ($admin_pass !== $admin_pass_confirm) {
         $error = '两次输入的密码不一致';
+        log_message('表单验证失败：两次输入的密码不一致', 'error');
     } else {
+        log_message('表单验证成功', 'success');
+        
         // 尝试连接数据库
         $conn = new mysqli($db_host, $db_user, $db_pass);
         
         if ($conn->connect_error) {
             $error = '数据库连接失败: ' . $conn->connect_error;
+            log_message('数据库连接失败: ' . $conn->connect_error, 'error');
         } else {
+            log_message('数据库连接成功', 'success');
+            
             // 创建数据库
             if (!$conn->query("CREATE DATABASE IF NOT EXISTS $db_name")) {
                 $error = '创建数据库失败: ' . $conn->error;
+                log_message('创建数据库失败: ' . $conn->error, 'error');
             } else {
+                log_message('数据库 ' . $db_name . ' 创建/检查成功', 'success');
+                
                 // 选择数据库
                 $conn->select_db($db_name);
+                log_message('已选择数据库: ' . $db_name, 'info');
                 
                 // 创建服务器表
                 $sql = "CREATE TABLE IF NOT EXISTS servers (
@@ -58,7 +218,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 if (!$conn->query($sql)) {
                     $error = '创建servers表失败: ' . $conn->error;
+                    log_message('创建servers表失败: ' . $conn->error, 'error');
                 } else {
+                    log_message('servers表创建成功', 'success');
+                    
                     // 创建管理员表
                     $sql = "CREATE TABLE IF NOT EXISTS admins (
                         id INT(11) AUTO_INCREMENT PRIMARY KEY,
@@ -69,14 +232,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     if (!$conn->query($sql)) {
                         $error = '创建admins表失败: ' . $conn->error;
+                        log_message('创建admins表失败: ' . $conn->error, 'error');
                     } else {
-                        // 插入管理员账户
+                        log_message('admins表创建成功', 'success');
+                        
+                        // 插入或更新管理员账户
                         $hashed_password = password_hash($admin_pass, PASSWORD_DEFAULT);
-                        $sql = "INSERT INTO admins (username, password) VALUES ('$admin_user', '$hashed_password')";
+                        $sql = "INSERT INTO admins (username, password) VALUES ('$admin_user', '$hashed_password') ON DUPLICATE KEY UPDATE password='$hashed_password'";
                         
                         if (!$conn->query($sql)) {
-                            $error = '创建管理员账户失败: ' . $conn->error;
+                            $error = '创建/更新管理员账户失败: ' . $conn->error;
+                            log_message('创建/更新管理员账户失败: ' . $conn->error, 'error');
                         } else {
+                            $success = '管理员账户已' . ($conn->affected_rows == 1 ? '创建' : '更新') . '成功！';
+                            log_message('管理员账户 ' . $admin_user . ' 创建/更新成功', 'success');
+                            
                             // 创建玩家历史数据表
                                 $sql = "CREATE TABLE IF NOT EXISTS player_history (
                                     id INT(11) AUTO_INCREMENT PRIMARY KEY,
@@ -89,10 +259,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             
                             if (!$conn->query($sql)) {
                                 $error = '创建player_history表失败: ' . $conn->error;
+                                log_message('创建player_history表失败: ' . $conn->error, 'error');
                             } else {
+                                log_message('player_history表创建成功', 'success');
+                                
                                 // 添加索引以提高查询性能
-                                $conn->query("CREATE INDEX idx_server_id ON player_history(server_id)");
-                                $conn->query("CREATE INDEX idx_record_time ON player_history(record_time)");
+                                $conn->query("CREATE INDEX IF NOT EXISTS idx_server_id ON player_history(server_id)");
+                                log_message('添加idx_server_id索引成功', 'success');
+                                
+                                $conn->query("CREATE INDEX IF NOT EXISTS idx_record_time ON player_history(record_time)");
+                                log_message('添加idx_record_time索引成功', 'success');
                                 
                                 // 创建存储过程用于定期清理旧数据
                                 // 临时设置SQL模式以避免分隔符问题
@@ -102,6 +278,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     DELETE FROM player_history WHERE record_time < DATE_SUB(NOW(), INTERVAL 30 DAY);
                                 END";
                                 $conn->query($procedure_sql);
+                                log_message('创建cleanup_old_player_history存储过程成功', 'success');
                                 
                                 // 更新配置文件
                                 $config_content = "<?php\n";
@@ -111,28 +288,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 $config_content .= "define('DB_USER', '$db_user');\n";
                                 $config_content .= "define('DB_PASS', '$db_pass');\n";
                                 $config_content .= "define('DB_NAME', '$db_name');\n\n";
-                                $config_content .= "// API配置\n";
-                                $config_content .= "define('API_URL', 'https://api.mcsrvstat.us/3/');\n";
-                                $config_content .= "// Java版服务器API URL列表（按优先级顺序）\n";
-                                $config_content .= "define('JAVA_API_URLS', ['http://cow.mc6.cn:10709/raw/', 'http://110.42.50.70:30204/raw/']);\n";
-                                $config_content .= "// Bedrock版服务器API URL\n";
-                                $config_content .= "// 注意：Bedrock API目前只支持单个URL，如有需要可扩展为数组\n";
-                                $config_content .= "// 如需支持多个Bedrock API，可改为：define('BEDROCK_API_URLS', ['https://api.mcsrvstat.us/bedrock/3/']);\n";
-                                $config_content .= "define('BEDROCK_API_URL', 'https://api.mcsrvstat.us/bedrock/3/');\n";
-                                $config_content .= "// mcsrvstat.us API不需要API密钥\n";
-                                $config_content .= "// define('API_KEY', 'your_api_key_here');\n\n";
+                                $config_content .= "// API更新地址配置\n";
+                                $config_content .= "define('API_UPDATE_URL', 'https://raw.githubusercontent.com/Relief156/Minecraft-Server-Status/refs/heads/main/api.json');\n\n";
+                                $config_content .= "// 引入API加载器\n";
+                                $config_content .= "require_once 'api_loader.php';\n\n";
                                 $config_content .= "// 网站配置\n";
                                 $config_content .= "define('SITE_TITLE', '$site_title');\n";
                                 $config_content .= "?>\n";
                                 
                                 if (!file_put_contents('config.php', $config_content)) {
                                     $error = '更新配置文件失败，请确保文件有写入权限';
+                                    log_message('更新配置文件失败，请确保文件有写入权限', 'error');
                                 } else {
+                                    log_message('配置文件创建成功', 'success');
+                                    
+                                    // 创建api_loader.php文件
+                                    $api_loader_content = <<<'EOD'
+                                    <?php
+                                    
+                                    /**
+                                     * 从api.json文件加载API URL
+                                     * @return array 包含Java和Bedrock API URL列表的数组
+                                     */
+                                    function loadApiUrls() {
+                                        $api_file = 'api.json';
+                                        if (file_exists($api_file)) {
+                                            $api_data = json_decode(file_get_contents($api_file), true);
+                                            if ($api_data && isset($api_data['routes'])) {
+                                                $java_apis = [];
+                                                $bedrock_apis = [];
+                                                foreach ($api_data['routes'] as $route) {
+                                                    if ($route['type'] === 'java') {
+                                                        $java_apis[] = $route['api_url'];
+                                                    } elseif ($route['type'] === 'bedrock') {
+                                                        $bedrock_apis[] = $route['api_url'];
+                                                    }
+                                                }
+                                                return [
+                                                    'java' => $java_apis,
+                                                    'bedrock' => $bedrock_apis
+                                                ];
+                                            }
+                                        }
+                                        // 默认API（当api.json不存在或格式错误时使用）
+                                        return [
+                                            'java' => ['http://cow.mc6.cn:10709/raw/'],
+                                            'bedrock' => ['https://api.mcsrvstat.us/bedrock/3/']
+                                        ];
+                                    }
+                                    
+                                    // 加载API URL
+                                    $api_urls = loadApiUrls();
+                                    // 定义API URL常量
+                                    define('JAVA_API_URLS', $api_urls['java']);
+                                    define('BEDROCK_API_URLS', $api_urls['bedrock']);
+                                    
+                                    ?>
+                                    EOD;
+                                    file_put_contents('api_loader.php', $api_loader_content);
+                                    log_message('api_loader.php文件创建成功', 'success');
+                                    
+                                    // 创建api.json文件
+                                    $default_api_data = [
+                                        'routes' => [
+                                            [
+                                                'type' => 'java',
+                                                'api_url' => 'http://cow.mc6.cn:10709/raw/',
+                                                'name' => '默认Java API'
+                                            ],
+                                            [
+                                                'type' => 'bedrock',
+                                                'api_url' => 'https://api.mcsrvstat.us/bedrock/3/',
+                                                'name' => '默认Bedrock API'
+                                            ]
+                                        ]
+                                    ];
+                                    file_put_contents('api.json', json_encode($default_api_data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+                                    log_message('api.json文件创建成功', 'success');
+
                                     // 创建已安装标记文件
                                     file_put_contents('installed.lock', 'Installed on ' . date('Y-m-d H:i:s'));
-                                    
+                                    log_message('创建installed.lock文件，标记安装完成', 'success');
+
                                     $success = '安装成功！即将跳转到监控页面...';
+                                    log_message('安装成功！3秒后重定向到首页', 'success');
                                     header('Refresh: 3; URL=index.php');
+                                    exit;
                                 }
                             }
                         }
@@ -143,7 +384,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // 关闭连接
         $conn->close();
+        log_message('数据库连接已关闭', 'info');
     }
+    
+    // 获取所有日志
+    $logs = log_message('安装流程结束', 'info');
 }
 ?>
 <!DOCTYPE html>
@@ -313,6 +558,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <?php echo $success; ?>
             </div>
         <?php else: ?>
+            <!-- 日志框 -->
+            <div class="log-container">
+                <div class="log-header">
+                    <h3>安装日志</h3>
+                    <button type="button" id="clear-log-btn" class="btn-clear-log">清空日志</button>
+                </div>
+                <div id="log-box" class="log-box">
+                    <?php if (!empty($logs)): ?>
+                        <?php foreach ($logs as $log): ?>
+                            <div class="log-entry log-<?php echo $log['type']; ?>">
+                                <span class="log-time"><?php echo $log['time']; ?></span>
+                                <span class="log-message"><?php echo $log['message']; ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="log-entry log-info">
+                            <span class="log-time"><?php echo date('Y-m-d H:i:s'); ?></span>
+                            <span class="log-message">系统就绪，等待安装流程开始...</span>
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+            
             <form method="POST">
                 <!-- 数据库配置部分 -->
                 <div class="form-section">
@@ -371,7 +639,175 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                 </div>
                 
-                <button type="submit" class="btn-submit">完成安装</button>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" id="test-db-btn" class="btn-submit" style="flex: 1; background-color: #2ecc71;">数据库测试</button>
+                    <button type="submit" class="btn-submit" style="flex: 1;">完成安装</button>
+                </div>
+                
+                <script>
+                    // 数据库测试按钮点击事件
+                    document.getElementById('test-db-btn').addEventListener('click', function() {
+                        // 收集表单数据
+                        const formData = new FormData(document.querySelector('form'));
+                        formData.append('test_database', 'true');
+                        
+                        // 禁用测试按钮
+                        const testBtn = this;
+                        testBtn.disabled = true;
+                        testBtn.textContent = '测试中...';
+                        
+                        // 清空日志框
+                        clearLog();
+                        addLogEntry('info', '开始数据库连接测试...');
+                        
+                        // 发送AJAX请求
+                        fetch('', {
+                            method: 'POST',
+                            body: formData
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            // 启用测试按钮
+                            testBtn.disabled = false;
+                            testBtn.textContent = '数据库测试';
+                            
+                            // 显示测试结果日志
+                if (data.logs && data.logs.length > 0) {
+                    clearLog();
+                    data.logs.forEach(log => {
+                        addLogEntry(log.type, log.message, log.time);
+                    });
+                }
+                            
+                            // 显示结果
+                            const resultDiv = document.createElement('div');
+                            resultDiv.className = data.success ? 'success-message' : 'error-message';
+                            resultDiv.textContent = data.message;
+                            
+                            // 添加到页面
+                            const container = document.querySelector('.container');
+                            const form = document.querySelector('form');
+                            container.insertBefore(resultDiv, form);
+                            
+                            // 3秒后移除
+                            setTimeout(() => {
+                                resultDiv.remove();
+                            }, 3000);
+                        })
+                        .catch(error => {
+                            // 启用测试按钮
+                            testBtn.disabled = false;
+                            testBtn.textContent = '数据库测试';
+                            
+                            // 添加错误日志
+                            addLogEntry('error', '请求失败: ' + error.message);
+                            
+                            console.error('Error:', error);
+                            alert('测试过程中发生错误');
+                        });
+                    });
+                    
+                    // 清空日志按钮点击事件
+                    document.getElementById('clear-log-btn').addEventListener('click', function() {
+                        clearLog();
+                        addLogEntry('info', '日志已清空');
+                    });
+                    
+                    // 添加日志条目函数
+                    function addLogEntry(type, message, time = null) {
+                        const logBox = document.getElementById('log-box');
+                        const logEntry = document.createElement('div');
+                        logEntry.className = 'log-entry log-' + type;
+                        
+                        const logTime = document.createElement('span');
+                        logTime.className = 'log-time';
+                        logTime.textContent = time || new Date().toLocaleString();
+                        
+                        const logMessage = document.createElement('span');
+                        logMessage.className = 'log-message';
+                        logMessage.textContent = message;
+                        
+                        logEntry.appendChild(logTime);
+                        logEntry.appendChild(logMessage);
+                        logBox.appendChild(logEntry);
+                        
+                        // 自动滚动到底部
+                        logBox.scrollTop = logBox.scrollHeight;
+                    }
+                    
+                    // 清空日志函数
+                    function clearLog() {
+                        const logBox = document.getElementById('log-box');
+                        logBox.innerHTML = '';
+                    }
+                    
+                    // 添加日志CSS样式
+                    const style = document.createElement('style');
+                    style.textContent = `
+                        .log-container {
+                            margin-bottom: 20px;
+                            border: 1px solid #e0e0e0;
+                            border-radius: 8px;
+                            overflow: hidden;
+                        }
+                        .log-header {
+                            display: flex;
+                            justify-content: space-between;
+                            align-items: center;
+                            padding: 10px 15px;
+                            background-color: #f8f9fa;
+                            border-bottom: 1px solid #e0e0e0;
+                        }
+                        .log-header h3 {
+                            margin: 0;
+                            color: #2c3e50;
+                            font-size: 16px;
+                        }
+                        .btn-clear-log {
+                            padding: 5px 10px;
+                            background-color: #6c757d;
+                            color: white;
+                            border: none;
+                            border-radius: 4px;
+                            cursor: pointer;
+                            font-size: 14px;
+                        }
+                        .btn-clear-log:hover {
+                            background-color: #5a6268;
+                        }
+                        .log-box {
+                            height: 200px;
+                            overflow-y: auto;
+                            padding: 10px;
+                            background-color: #fafafa;
+                            font-family: 'Courier New', monospace;
+                            font-size: 14px;
+                        }
+                        .log-entry {
+                            margin-bottom: 5px;
+                            padding: 5px;
+                            border-radius: 4px;
+                            display: flex;
+                            gap: 10px;
+                        }
+                        .log-time {
+                            color: #666;
+                            min-width: 140px;
+                        }
+                        .log-info .log-message {
+                            color: #212529;
+                        }
+                        .log-success .log-message {
+                            color: #155724;
+                            background-color: #d4edda;
+                        }
+                        .log-error .log-message {
+                            color: #721c24;
+                            background-color: #f8d7da;
+                        }
+                    `;
+                    document.head.appendChild(style);
+                    </script>
             </form>
         <?php endif; ?>
     </div>
